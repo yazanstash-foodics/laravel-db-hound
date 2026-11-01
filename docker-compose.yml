@@ -1,0 +1,44 @@
+# Test services for db-hound integration tests.
+# Host ports avoid the defaults (3306/6379) so they don't clash with local installs.
+# Override with DB_HOUND_MYSQL80_PORT / DB_HOUND_MYSQL84_PORT / DB_HOUND_REDIS_PORT.
+
+services:
+  mysql80:
+    image: mysql:8.0
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+      MYSQL_DATABASE: db_hound
+    ports:
+      - "${DB_HOUND_MYSQL80_PORT:-33080}:3306"
+    tmpfs:
+      - /var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  mysql84:
+    image: mysql:8.4
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+      MYSQL_DATABASE: db_hound
+    ports:
+      - "${DB_HOUND_MYSQL84_PORT:-33084}:3306"
+    tmpfs:
+      - /var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${DB_HOUND_REDIS_PORT:-63790}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
