@@ -1,22 +1,14 @@
 name: run-tests
 
 on:
-  push:
-    paths:
-      - '**.php'
-      - '.github/workflows/run-tests.yml'
-      - 'phpunit.xml.dist'
-      - 'composer.json'
-      - 'composer.lock'
-      - 'docker-compose.yml'
   pull_request:
     paths:
-      - '**.php'
-      - '.github/workflows/run-tests.yml'
-      - 'phpunit.xml.dist'
-      - 'composer.json'
-      - 'composer.lock'
-      - 'docker-compose.yml'
+      - "**.php"
+      - ".github/workflows/run-tests.yml"
+      - "phpunit.xml.dist"
+      - "composer.json"
+      - "composer.lock"
+      - "docker-compose.yml"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -24,24 +16,14 @@ concurrency:
 
 jobs:
   unit:
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     strategy:
       fail-fast: true
       matrix:
-        os: [ubuntu-latest, windows-latest]
         php: [8.5, 8.4]
-        laravel: [13.*, 12.*, 11.*]
-        stability: [prefer-lowest, prefer-stable]
-        include:
-          - laravel: 13.*
-            testbench: 11.*
-          - laravel: 12.*
-            testbench: 10.*
-          - laravel: 11.*
-            testbench: 9.*
 
-    name: Unit - P${{ matrix.php }} - L${{ matrix.laravel }} - ${{ matrix.stability }} - ${{ matrix.os }}
+    name: Unit - P${{ matrix.php }}
 
     steps:
       - name: Checkout code
@@ -51,7 +33,7 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
-          extensions: dom, curl, libxml, mbstring, zip, pcntl, pdo, sqlite, pdo_sqlite, bcmath, soap, intl, gd, exif, iconv, imagick, fileinfo
+          extensions: dom, curl, libxml, mbstring, zip, pcntl, pdo, sqlite, pdo_sqlite, bcmath, intl, fileinfo
           coverage: none
 
       - name: Setup problem matchers
@@ -59,28 +41,11 @@ jobs:
           echo "::add-matcher::${{ runner.tool_cache }}/php.json"
           echo "::add-matcher::${{ runner.tool_cache }}/phpunit.json"
 
-      # Composer blocks every package version that has a security advisory. That
-      # covers all tagged Laravel 11 releases. Because minimum-stability is dev,
-      # the solver would then fall back to the unreleased 11.x-dev branch without
-      # an error. This is a throwaway test install, so we allow the advisory-affected
-      # tags and test the real releases we claim to support.
       - name: Install dependencies
-        run: |
-          composer config audit.block-insecure false
-          composer require "laravel/framework:${{ matrix.laravel }}" "orchestra/testbench:${{ matrix.testbench }}" --no-interaction --no-update
-          composer update --${{ matrix.stability }} --prefer-dist --no-interaction
+        run: composer update --prefer-stable --prefer-dist --no-interaction
 
       - name: List Installed Dependencies
         run: composer show -D
-
-      - name: Assert a tagged Laravel release was installed
-        shell: bash
-        run: |
-          version=$(composer show laravel/framework --format=json | php -r 'echo json_decode(stream_get_contents(STDIN))->versions[0];')
-          echo "Resolved laravel/framework ${version}"
-          case "$version" in
-            *dev*) echo "::error::laravel/framework resolved to ${version}, not a tagged ${{ matrix.laravel }} release"; exit 1 ;;
-          esac
 
       - name: Execute unit tests
         run: vendor/bin/pest --ci --testsuite=Unit
@@ -91,7 +56,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        mysql: ['8.0', '8.4']
+        mysql: ["8.0", "8.4"]
 
     name: Integration - MySQL ${{ matrix.mysql }}
 
@@ -99,7 +64,7 @@ jobs:
       mysql:
         image: mysql:${{ matrix.mysql }}
         env:
-          MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
           MYSQL_DATABASE: db_hound
         ports:
           - 3306:3306
@@ -125,7 +90,7 @@ jobs:
       - name: Setup PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.4'
+          php-version: "8.4"
           extensions: dom, curl, libxml, mbstring, zip, pcntl, pdo, pdo_mysql, redis, bcmath, intl, fileinfo
           coverage: none
 

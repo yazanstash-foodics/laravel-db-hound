@@ -36,7 +36,7 @@ Missing indexes usually show up only in production. Local and CI databases are t
 ## Requirements
 
 - PHP 8.4
-- Laravel 11, 12 or 13
+- Laravel 13
 - MySQL 8.0 or later. MariaDB is best-effort.
 - Redis, for the default Store. Single-server apps can use the `file` Store instead.
 - A running Laravel scheduler, for flush and prune.
@@ -144,7 +144,7 @@ Both files are written to the `report.disk` filesystem disk (default `local`), u
 | `db-hound/latest.md` | `analyze` (overwritten each run) | no |
 | `db-hound/dump-{Y-m-d_His}-SENSITIVE.jsonl` | `dump` | **yes** |
 
-With Laravel 11+'s default `local` disk, the files are in `storage/app/private/db-hound/`. Apps whose `local` disk still has the older root use `storage/app/db-hound/`. `analyze` prints the path relative to the disk, and `dump` prints the absolute path.
+With Laravel's default `local` disk, the files are in `storage/app/private/db-hound/`. Apps whose `local` disk still has the older root use `storage/app/db-hound/`. `analyze` prints the path relative to the disk, and `dump` prints the absolute path.
 
 ## Copying files off the host
 
