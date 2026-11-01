@@ -62,7 +62,7 @@ it('persists no binding values anywhere and still suggests indexes when store_bi
         ->not->toContain('2031-02-03')
         ->not->toContain('4242');
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
 
     $rows = DB::table('db_hound_queries')->get();
 
@@ -104,7 +104,7 @@ it('stores the Sample only as ciphertext in Redis and in db_hound_queries', func
         'bindings' => ['secret-binding-value@example.test'],
     ]);
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
 
     $row = DB::table('db_hound_queries')->sole();
 
@@ -159,7 +159,7 @@ function queryOrdersOf(string $email): void
 function flushCaptured(): void
 {
     pushedRedisValues();
-    test()->artisan('db-hound:flush')->assertSuccessful();
+    test()->artisan('db-hound:flush --force')->assertSuccessful();
 }
 
 it('keeps the first Sample per Fingerprint until it expires, then takes the next capture', function () {
@@ -239,7 +239,7 @@ it('erases every stored Sample once store_bindings is switched off', function ()
     config()->set('db-hound.store_bindings', false);
     app()->forgetInstance(Recorder::class);
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
 
     expect(DB::table('db_hound_queries')->count())->toBe(2)
         ->and(DB::table('db_hound_queries')->whereNotNull('sample')->count())->toBe(0)

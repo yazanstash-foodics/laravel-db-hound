@@ -99,11 +99,41 @@ return [
     | into the `db_hound_queries` table. `connection` names a connection from
     | `database.redis`; `prefix` namespaces every key db-hound writes.
     |
+    | Capture fails open: db-hound opens its own connection with that config
+    | but with `timeout` seconds to connect and to wait for each reply, so a
+    | slow or unreachable Redis never blocks a request for long. A batch that
+    | can't be written is dropped and logged; for the next minute that process
+    | then drops its batches without contacting Redis, so an outage costs it
+    | one timeout (and one log entry) per minute.
+    |
     */
 
     'redis' => [
         'connection' => env('DB_HOUND_REDIS_CONNECTION', 'default'),
         'prefix' => env('DB_HOUND_REDIS_PREFIX', 'db-hound:'),
+        'timeout' => (float) env('DB_HOUND_REDIS_TIMEOUT', 0.05),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Flush
+    |--------------------------------------------------------------------------
+    |
+    | The package schedules `db-hound:flush` every minute while capture is
+    | enabled; set `schedule` to false to register it yourself instead. Each
+    | run moves the buffer into `db_hound_queries` only once it holds at least
+    | `max_fingerprints` Fingerprints or `max_bytes` bytes (approximate size
+    | of the buffered SQL and Samples), or once its oldest capture is
+    | `max_age_minutes` old, so quiet apps don't lose data to Redis eviction.
+    | `db-hound:flush --force` flushes regardless.
+    |
+    */
+
+    'flush' => [
+        'schedule' => (bool) env('DB_HOUND_FLUSH_SCHEDULE', true),
+        'max_fingerprints' => (int) env('DB_HOUND_FLUSH_MAX_FINGERPRINTS', 5000),
+        'max_bytes' => (int) env('DB_HOUND_FLUSH_MAX_BYTES', 10 * 1024 * 1024),
+        'max_age_minutes' => (float) env('DB_HOUND_FLUSH_MAX_AGE_MINUTES', 360),
     ],
 
     /*

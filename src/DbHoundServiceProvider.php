@@ -12,10 +12,13 @@ use Foodics\DbHound\Commands\FlushCommand;
 use Foodics\DbHound\Contracts\Store;
 use Foodics\DbHound\Persistence\QueryRepository;
 use Foodics\DbHound\Stores\RedisStore;
+use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Queue\Jobs\SyncJob;
+use Illuminate\Redis\Connections\Connection;
+use Illuminate\Redis\RedisManager;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 use Throwable;
@@ -34,10 +37,13 @@ class DbHoundServiceProvider extends PackageServiceProvider
             ]);
     }
 
+    /** How long a scheduled flush's overlap lock outlives a flush that died. */
+    private const FLUSH_LOCK_MINUTES = 10;
+
     public function packageRegistered(): void
     {
         $this->app->singleton(Store::class, fn (Application $app) => new RedisStore(
-            $app->make('redis')->connection($app->make('config')->get('db-hound.redis.connection')),
+            fn () => $this->storeRedisConnection($app),
             (string) $app->make('config')->get('db-hound.redis.prefix', 'db-hound:'),
         ));
 
@@ -48,6 +54,7 @@ class DbHoundServiceProvider extends PackageServiceProvider
             CapturePolicy::fromConfig((array) $app->make('config')->get('db-hound', [])),
             storeBindings: (bool) $app->make('config')->get('db-hound.store_bindings', true),
             sampleTtlSeconds: (int) round((float) $app->make('config')->get('db-hound.sample_ttl_days', 7) * 86400),
+            logger: $app->make('log'),
         ));
 
         $this->app->bind(Analyzer::class, fn (Application $app) => new Analyzer(
@@ -68,6 +75,32 @@ class DbHoundServiceProvider extends PackageServiceProvider
     }
 
     /**
+     * A connection of its own to the configured Redis connection, with
+     * db-hound's short timeouts: a slow or unreachable Redis costs a captured
+     * batch at most `redis.timeout` seconds per attempt, and the app's own
+     * connections keep their settings.
+     */
+    private function storeRedisConnection(Application $app): Connection
+    {
+        $config = $app->make('config');
+        $name = (string) $config->get('db-hound.redis.connection', 'default');
+        $redis = (array) $config->get('database.redis', []);
+        $timeout = (float) $config->get('db-hound.redis.timeout', 0.05);
+
+        $manager = new RedisManager($app, (string) ($redis['client'] ?? 'phpredis'), [
+            'options' => (array) ($redis['options'] ?? []),
+            $name => [
+                ...(array) ($redis[$name] ?? []),
+                'timeout' => $timeout,
+                'read_timeout' => $timeout,
+                'read_write_timeout' => $timeout,
+            ],
+        ]);
+
+        return $manager->connection($name);
+    }
+
+    /**
      * Events that start a new unit of work inside a long-lived process. FPM
      * requests and Artisan commands each get a fresh process instead.
      */
@@ -80,6 +113,8 @@ class DbHoundServiceProvider extends PackageServiceProvider
 
     public function packageBooted(): void
     {
+        $this->scheduleFlush();
+
         $this->app->make('events')->listen(self::UNIT_OF_WORK_EVENTS, function (mixed $event = null) {
             // A job run synchronously is part of the unit that dispatched it.
             if ($event instanceof JobProcessing && $event->job instanceof SyncJob) {
@@ -102,6 +137,29 @@ class DbHoundServiceProvider extends PackageServiceProvider
             } catch (Throwable) {
                 // Capture fails open: it must never break the query it observes.
             }
+        });
+    }
+
+    /**
+     * Flush every minute while capture is enabled; the command itself only
+     * acts once a threshold is reached. Apps that set `flush.schedule` to
+     * false register db-hound:flush on their own terms instead.
+     *
+     * One server runs it at a time, and a flush that dies without releasing
+     * its overlap lock blocks the next ones for minutes, not a day.
+     */
+    private function scheduleFlush(): void
+    {
+        $this->callAfterResolving(Schedule::class, function (Schedule $schedule) {
+            if (! $this->app->make('config')->get('db-hound.flush.schedule', true)) {
+                return;
+            }
+
+            $schedule->command(FlushCommand::class)
+                ->everyMinute()
+                ->withoutOverlapping(expiresAt: self::FLUSH_LOCK_MINUTES)
+                ->onOneServer()
+                ->when(fn () => (bool) $this->app->make('config')->get('db-hound.enabled'));
         });
     }
 }

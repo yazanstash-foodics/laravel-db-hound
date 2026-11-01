@@ -2,6 +2,7 @@
 
 use Foodics\DbHound\Capture\Recorder;
 use Foodics\DbHound\Contracts\Store;
+use Foodics\DbHound\Stores\BufferStats;
 use Foodics\DbHound\Tests\IntegrationTestCase;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
@@ -63,6 +64,11 @@ it('pushes each batch of 50 queries to the Store in a single write', function ()
         public function snapshot(): array
         {
             return $this->inner->snapshot();
+        }
+
+        public function stats(): BufferStats
+        {
+            return $this->inner->stats();
         }
     };
     app()->instance(Store::class, $spy);

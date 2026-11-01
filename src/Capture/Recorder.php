@@ -6,6 +6,7 @@ use Foodics\DbHound\Contracts\Store;
 use Illuminate\Contracts\Encryption\Encrypter;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Carbon;
+use Psr\Log\LoggerInterface;
 use Throwable;
 
 /**
@@ -24,12 +25,22 @@ final class Recorder
     /** Longer SQL (inline literals, huge lists) is too unlikely to repeat to cache. */
     private const SHAPE_CACHE_MAX_SQL_LENGTH = 4096;
 
+    /**
+     * After a Store failure, batches are dropped without contacting the Store
+     * for this many seconds, and the failure is logged at most this often:
+     * an outage costs each process one timeout per window, not one per batch.
+     */
+    private const FAILURE_COOL_DOWN = 60;
+
     /** @var array<string, QueryAggregate> */
     private array $pending = [];
 
     private int $pendingQueries = 0;
 
     private bool $shutdownRegistered = false;
+
+    /** When the Store last failed (Unix seconds), while it is cooling down. */
+    private ?int $failedAt = null;
 
     /** Whether the current unit of work is sampled; null until its first query. */
     private ?bool $sampled = null;
@@ -51,6 +62,7 @@ final class Recorder
         private readonly int $batchSize = 50,
         private readonly bool $storeBindings = true,
         private readonly int $sampleTtlSeconds = 7 * 86400,
+        private readonly ?LoggerInterface $logger = null,
     ) {}
 
     public function record(QueryExecuted $event): void
@@ -118,11 +130,37 @@ final class Recorder
         $batch = array_values($this->pending);
         $this->pending = [];
         $this->pendingQueries = 0;
+        $now = Carbon::now()->getTimestamp();
+
+        // Fail open: while the Store is cooling down, the batch is dropped.
+        if ($this->failedAt !== null && $now - $this->failedAt < self::FAILURE_COOL_DOWN) {
+            return;
+        }
+
+        $this->failedAt = null;
 
         try {
             $this->store->push($batch);
-        } catch (Throwable) {
+        } catch (Throwable $e) {
             // Fail open: the batch is dropped.
+            $this->failedAt = $now;
+            $this->reportFailure($e);
+        }
+    }
+
+    /**
+     * Log a Store failure; the cool-down that follows it keeps an outage
+     * from flooding the logs.
+     */
+    private function reportFailure(Throwable $e): void
+    {
+        try {
+            $this->logger?->warning(
+                'db-hound could not push captured queries to its Store; the batch was dropped. Captured queries are dropped without contacting the Store for the next minute.',
+                ['exception' => $e],
+            );
+        } catch (Throwable) {
+            // Logging must not break the application either.
         }
     }
 

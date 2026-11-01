@@ -49,7 +49,7 @@ it('suggests an index on an unindexed equality column after flush and analyze', 
         DB::table('hound_orders')->where('customer_email', 'secret-binding-value@example.test')->get();
     }
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
     $this->artisan('db-hound:analyze')->assertSuccessful();
 
     $report = Storage::disk('local')->get('db-hound/latest.md');
@@ -68,7 +68,7 @@ it('suggests nothing for the same query on an indexed column', function () {
         DB::table('hound_orders')->where('branch_id', 7)->get();
     }
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
     $this->artisan('db-hound:analyze')->assertSuccessful();
 
     $report = Storage::disk('local')->get('db-hound/latest.md');
@@ -87,7 +87,7 @@ it('writes a timestamped Report plus latest.md with the full header and Suggesti
         DB::table('hound_orders')->where('customer_email', 'secret-binding-value@example.test')->get();
     }
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
     $this->artisan('db-hound:analyze')->assertSuccessful();
 
     $disk = Storage::disk('local');
@@ -126,12 +126,12 @@ it('does not capture the queries its own commands run', function () {
     };
 
     $runQueries();
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
     $this->artisan('db-hound:analyze')->assertSuccessful();
 
     // The next batch would carry anything the commands themselves captured.
     $runQueries();
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
     $this->artisan('db-hound:analyze')->assertSuccessful();
 
     expect(Storage::disk('local')->get('db-hound/latest.md'))
@@ -147,7 +147,7 @@ it('reports capture coverage at the capture time under a non-UTC app timezone', 
         DB::table('hound_orders')->where('customer_email', 'someone@example.test')->get();
     }
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
     $this->artisan('db-hound:analyze')->assertSuccessful();
 
     expect(Storage::disk('local')->get('db-hound/latest.md'))
@@ -160,7 +160,7 @@ it('suggests the index on the real table for a query that aliases it', function 
         DB::table('hound_orders as o')->where('o.customer_email', 'someone@example.test')->get();
     }
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
     $this->artisan('db-hound:analyze')->assertSuccessful();
 
     expect(Storage::disk('local')->get('db-hound/latest.md'))
@@ -175,7 +175,7 @@ it('reports a Fingerprint whose EXPLAIN fails without leaking its binding values
         DB::table('hound_orders')->where('customer_email', 'secret-binding-value@example.test')->get();
     }
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
     Schema::drop('hound_orders');
 
     $this->artisan('db-hound:analyze')
@@ -200,7 +200,7 @@ it('keeps inline literals out of Redis, db_hound_queries and the Report', functi
         ->not->toContain('inline-secret')
         ->not->toContain('9876');
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
 
     $rows = json_encode(DB::table('db_hound_queries')->get());
 
@@ -223,7 +223,7 @@ it('suggests an index on the unindexed WHERE column of an UPDATE', function () {
             ->update(['total' => 12345.67]);
     }
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
     $this->artisan('db-hound:analyze')->assertSuccessful();
 
     $report = Storage::disk('local')->get('db-hound/latest.md');
@@ -244,7 +244,7 @@ it('suggests an index on the unindexed WHERE column of a DELETE', function () {
         DB::table('hound_orders')->where('customer_email', 'secret-where-value@example.test')->delete();
     }
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
     $this->artisan('db-hound:analyze')->assertSuccessful();
 
     $report = Storage::disk('local')->get('db-hound/latest.md');
@@ -266,7 +266,7 @@ it('suggests a composite index ordered equality → range, noting the filesort a
             ->get();
     }
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
     $this->artisan('db-hound:analyze')->assertSuccessful();
 
     $report = Storage::disk('local')->get('db-hound/latest.md');
@@ -288,7 +288,7 @@ it('consolidates a Suggestion that is a left prefix of another into one index se
         DB::table('hound_orders')->where('customer_email', 'secret-binding-value@example.test')->orderBy('placed_at')->get();
     }
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
     $this->artisan('db-hound:analyze')->assertSuccessful();
 
     $report = Storage::disk('local')->get('db-hound/latest.md');
@@ -310,7 +310,7 @@ it('proposes extending an existing index that is a left prefix of the needed one
         DB::table('hound_orders')->where('branch_id', 7)->orderBy('placed_at')->get();
     }
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
     $this->artisan('db-hound:analyze')->assertSuccessful();
 
     $report = Storage::disk('local')->get('db-hound/latest.md');
@@ -346,7 +346,7 @@ it('suggests an index on the inner table of a whereHas-style EXISTS subquery', f
             ->get();
     }
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
     $this->artisan('db-hound:analyze')->assertSuccessful();
 
     $report = Storage::disk('local')->get('db-hound/latest.md');
@@ -366,7 +366,7 @@ it('lists a query the SQL parser cannot parse as unparsed and still writes the R
             ->get();
     }
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
     $this->artisan('db-hound:analyze')->assertSuccessful();
 
     $report = Storage::disk('local')->get('db-hound/latest.md');

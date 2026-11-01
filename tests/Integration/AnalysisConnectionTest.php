@@ -76,7 +76,7 @@ it('runs EXPLAIN and schema queries on the mapped analysis connection', function
     config()->set('db-hound.analysis.connections', ['mysql' => 'mysql_replica']);
 
     captureOrdersQuery();
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
 
     $queries = explainAndSchemaQueries(queriesRunByAnalyze());
 
@@ -89,7 +89,7 @@ it('runs EXPLAIN and schema queries on the mapped analysis connection', function
 
 it('runs EXPLAIN and schema queries on the captured connection without a mapping', function () {
     captureOrdersQuery();
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
 
     $queries = explainAndSchemaQueries(queriesRunByAnalyze());
 
@@ -102,7 +102,7 @@ it('runs each EXPLAIN in a read-only transaction with max_execution_time set', f
     config()->set('db-hound.analysis.max_execution_time_ms', 1234);
 
     captureOrdersQuery();
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
 
     $queries = array_column(queriesRunByAnalyze(), 1);
     $explain = array_search('explain format=json select * from `hound_orders` where `customer_email` = ?', $queries, true);
@@ -125,7 +125,7 @@ it('sends only SELECTs to EXPLAIN, rewriting writes and skipping other statement
         DB::table('hound_orders')->insert(['customer_email' => "new{$i}@example.test"]);
     }
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
 
     $explains = array_values(array_filter(
         array_column(queriesRunByAnalyze(), 1),
@@ -150,7 +150,7 @@ it('lists a Fingerprint whose EXPLAIN fails and still analyzes the others', func
     }
     captureOrdersQuery();
 
-    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
     Schema::drop('hound_gone');
 
     $queries = array_column(queriesRunByAnalyze(), 1);
