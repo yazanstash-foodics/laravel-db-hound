@@ -18,6 +18,13 @@ final class Suggestion
     public float $maxMs = 0.0;
 
     /**
+     * Alternatives for the engineer to weigh (e.g. when a filesort remains).
+     *
+     * @var list<string>
+     */
+    public array $notes = [];
+
+    /**
      * @param  list<string>  $columns  proposed columns, in index order
      * @param  list<string>  $reasons
      * @param  list<Index>  $existingIndexes
@@ -27,7 +34,7 @@ final class Suggestion
         public readonly string $connection,
         public readonly string $table,
         public readonly array $columns,
-        public readonly array $reasons,
+        public array $reasons,
         public readonly int $rowCount,
         public readonly array $existingIndexes,
         public readonly array $columnTypes,
@@ -51,6 +58,18 @@ final class Suggestion
     public function impact(): float
     {
         return $this->count * $this->averageMs();
+    }
+
+    /**
+     * @param  list<string>  $reasons
+     */
+    public function flag(array $reasons, ?string $note = null): void
+    {
+        $this->reasons = array_values(array_unique([...$this->reasons, ...$reasons]));
+
+        if ($note !== null && ! in_array($note, $this->notes, true)) {
+            $this->notes[] = $note;
+        }
     }
 
     public function serve(string $fingerprint, int $count, float $totalMs, float $maxMs): void

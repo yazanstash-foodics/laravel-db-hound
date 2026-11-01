@@ -17,12 +17,19 @@ final class Analyzer
 {
     public const REASON_FULL_SCAN = 'full scan';
 
+    public const REASON_NO_INDEX = 'no index used';
+
+    public const REASON_FILESORT = 'filesort';
+
+    public const REASON_TEMPORARY = 'temporary table';
+
     public const REASON_NEEDS_SAMPLE = 'cannot EXPLAIN without a Sample: the Fingerprint has a literal MySQL does not accept as a parameter';
 
     public function __construct(
         private readonly Encrypter $encrypter,
         private readonly ColumnExtractor $extractor = new ColumnExtractor,
         private readonly PlaceholderBindings $placeholders = new PlaceholderBindings,
+        private readonly int $examinedRowsThreshold = 1000,
     ) {}
 
     /**
@@ -64,42 +71,29 @@ final class Analyzer
                 continue;
             }
 
-            foreach ($plan->accesses as $access) {
-                if (! $access->isFullScan()) {
-                    continue;
-                }
-
-                $predicate = $this->extractor->equalityColumn($shape->sql, $access->table);
-
-                if ($predicate === null) {
-                    $unparsed[] = new UnparsedQuery($query->connection, $query->sql, 'full scan, but predicate columns could not be extracted');
-
-                    continue;
-                }
-
-                // EXPLAIN names the access by alias; schema lookups need the base table.
-                [$table, $column] = [$predicate->table, $predicate->column];
-
+            foreach ($this->candidates($query->sql, $shape->sql, $plan, $driver, $unparsed, $query->connection) as [$access, $reference, $reasons, $candidate]) {
+                $table = $reference->table;
                 $indexes = $driver->indexes($table);
 
-                if ($this->alreadyIndexed($indexes, [$column])) {
+                if ($this->alreadyIndexed($indexes, $candidate->columns)) {
                     continue;
                 }
 
-                $key = $query->connection.'|'.$table.'|'.$column;
+                $key = $query->connection.'|'.$table.'|'.implode(',', $candidate->columns);
 
                 $suggestions[$key] ??= new Suggestion(
                     connection: $query->connection,
                     table: $table,
-                    columns: [$column],
-                    reasons: [self::REASON_FULL_SCAN],
+                    columns: $candidate->columns,
+                    reasons: [],
                     rowCount: $driver->rowCount($table),
                     existingIndexes: $indexes,
-                    columnTypes: array_intersect_key($driver->columnTypes($table), [$column => true]),
+                    columnTypes: array_intersect_key($driver->columnTypes($table), array_flip($candidate->columns)),
                     access: $access,
                     plan: $plan,
                 );
 
+                $suggestions[$key]->flag($reasons, $candidate->note);
                 $suggestions[$key]->serve($query->sql, $query->count, $query->totalMs, $query->maxMs);
             }
         }
@@ -108,6 +102,145 @@ final class Analyzer
         usort($ranked, fn (Suggestion $a, Suggestion $b) => $b->impact() <=> $a->impact());
 
         return new AnalysisResult($ranked, $unparsed);
+    }
+
+    /**
+     * The table accesses of a plan that show a missing-index symptom, each
+     * with the table reference it reads, the symptoms, and the index it
+     * needs. Symptomatic accesses db-hound cannot turn into a candidate are
+     * added to `$unparsed`.
+     *
+     * @param  list<UnparsedQuery>  $unparsed
+     * @return list<array{TableAccess, TableColumns, list<string>, IndexCandidate}>
+     */
+    private function candidates(string $fingerprint, string $sql, Plan $plan, Driver $driver, array &$unparsed, string $connection): array
+    {
+        $symptoms = [];
+
+        foreach ($plan->accesses as $position => $access) {
+            if (! str_starts_with($access->table, '<')) {
+                $symptoms[$position] = $this->accessSymptoms($access);
+            }
+        }
+
+        if (array_filter($symptoms) === [] && ! $plan->usingFilesort && ! $plan->usingTemporary) {
+            return [];
+        }
+
+        try {
+            $extracted = $this->extractor->extract($sql, fn (string $table) => array_keys($driver->columnTypes($table)));
+        } catch (UnparseableSql $e) {
+            $unparsed[] = new UnparsedQuery($connection, $fingerprint, $e->getMessage());
+
+            return [];
+        } catch (Throwable $e) {
+            // A parser bug on one query must not abort the run.
+            $unparsed[] = new UnparsedQuery($connection, $fingerprint, 'the SQL parser failed on it ('.class_basename($e).')');
+
+            return [];
+        }
+
+        $candidates = [];
+        // Tables inside materialized subqueries are read apart from the join around them.
+        $readBefore = ['outer' => [], 'materialized' => []];
+        $driving = $this->driving($plan);
+
+        foreach ($symptoms as $position => $reasons) {
+            $access = $plan->accesses[$position];
+            $group = $access->materialized ? 'materialized' : 'outer';
+            $before = $readBefore[$group];
+            $readBefore[$group][] = $access->table;
+            $references = $extracted->named($access->table);
+
+            if (count($references) !== 1) {
+                if ($reasons !== []) {
+                    $unparsed[] = new UnparsedQuery($connection, $fingerprint, sprintf(
+                        '%s on `%s`, but %s',
+                        implode(', ', $reasons),
+                        $access->table,
+                        $references === [] ? 'the query has no such table' : 'several table references have that name',
+                    ));
+                }
+
+                continue;
+            }
+
+            $reference = $references[0];
+
+            // A sort is served by the index of the table the plan drives the join from.
+            if ($reference->sort !== [] && $position === $driving) {
+                array_push($reasons, ...array_filter([
+                    $plan->usingFilesort ? self::REASON_FILESORT : null,
+                    $plan->usingTemporary ? self::REASON_TEMPORARY : null,
+                ]));
+            }
+
+            if ($reasons === []) {
+                continue;
+            }
+
+            // The Driver inspects the connection's default database: another one's table would be looked up in the wrong schema.
+            if ($reference->database !== null) {
+                $unparsed[] = new UnparsedQuery($connection, $fingerprint, sprintf(
+                    "%s on `%s`, but it is read from database `%s`, and db-hound inspects only the connection's default database",
+                    implode(', ', $reasons),
+                    $access->table,
+                    $reference->database,
+                ));
+
+                continue;
+            }
+
+            $candidate = IndexCandidate::for($reference, $before, $position === $driving);
+
+            if ($candidate === null) {
+                if ($reference->hasUnindexablePredicates || $extracted->hasUnresolvedColumns) {
+                    $unparsed[] = new UnparsedQuery($connection, $fingerprint, sprintf(
+                        '%s on `%s`, but no indexable predicate columns were found',
+                        implode(', ', $reasons),
+                        $reference->table,
+                    ));
+                }
+
+                continue;
+            }
+
+            $candidates[] = [$access, $reference, $reasons, $candidate];
+        }
+
+        return $candidates;
+    }
+
+    /**
+     * The position of the access the plan drives the join from: the first
+     * one, past tables it reads as a single row and the inside of
+     * materialized subqueries.
+     */
+    private function driving(Plan $plan): ?int
+    {
+        foreach ($plan->accesses as $position => $access) {
+            if (! $access->materialized && ! in_array(strtolower($access->accessType), ['const', 'system'], true)) {
+                return $position;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function accessSymptoms(TableAccess $access): array
+    {
+        if ($access->isFullScan()) {
+            return [self::REASON_FULL_SCAN];
+        }
+
+        if ($access->key === null && ($access->rowsExamined ?? 0) >= $this->examinedRowsThreshold) {
+            return [self::REASON_NO_INDEX];
+        }
+
+        return [];
     }
 
     /**

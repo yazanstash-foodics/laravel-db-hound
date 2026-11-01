@@ -141,3 +141,27 @@ it('shows at most three example Fingerprints per Suggestion', function () {
     expect(substr_count($markdown, '```sql'))->toBe(3)
         ->and($markdown)->toContain('- none');
 });
+
+it('renders the alternative note of a Suggestion whose index leaves a filesort', function () {
+    $suggestion = new Suggestion(
+        connection: 'mysql',
+        table: 'orders',
+        columns: ['status', 'total'],
+        reasons: ['full scan', 'filesort'],
+        rowCount: 5000,
+        existingIndexes: [],
+        columnTypes: ['status' => 'varchar(20)', 'total' => 'decimal(10,2)'],
+        access: new TableAccess('orders', 'ALL', null, 5000),
+        plan: new Plan([new TableAccess('orders', 'ALL', null, 5000)], usingFilesort: true),
+    );
+    $suggestion->flag([], 'filesort remains; consider `(status, created_at, total)` if the range on `total` matches most rows.');
+    $suggestion->serve('select * from `orders` where `status` = ? and `total` > ? order by `created_at`', 10, 100.0, 20.0);
+
+    $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult([$suggestion], []));
+
+    expect($markdown)->toContain(
+        "- **Reasons:** full scan, filesort\n"
+        ."- **Note:** filesort remains; consider `(status, created_at, total)` if the range on `total` matches most rows.\n"
+        ."\n**EXPLAIN summary**",
+    );
+});

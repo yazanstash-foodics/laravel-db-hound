@@ -1,0 +1,66 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "1100.19"
+    },
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "i",
+          "access_type": "ALL",
+          "rows_examined_per_scan": 8107,
+          "rows_produced_per_join": 810,
+          "filtered": "10.00",
+          "cost_info": {
+            "read_cost": "735.38",
+            "eval_cost": "81.07",
+            "prefix_cost": "816.45",
+            "data_read_per_join": "82K"
+          },
+          "used_columns": [
+            "order_id",
+            "kind"
+          ],
+          "attached_condition": "(`db_hound_fixtures`.`i`.`kind` = 'food')"
+        }
+      },
+      {
+        "table": {
+          "table_name": "o",
+          "access_type": "eq_ref",
+          "possible_keys": [
+            "PRIMARY"
+          ],
+          "key": "PRIMARY",
+          "used_key_parts": [
+            "id"
+          ],
+          "key_length": "8",
+          "ref": [
+            "db_hound_fixtures.i.order_id"
+          ],
+          "rows_examined_per_scan": 1,
+          "rows_produced_per_join": 81,
+          "filtered": "10.00",
+          "cost_info": {
+            "read_cost": "202.68",
+            "eval_cost": "8.11",
+            "prefix_cost": "1100.20",
+            "data_read_per_join": "9K"
+          },
+          "used_columns": [
+            "id",
+            "branch_id",
+            "customer_id",
+            "status",
+            "total",
+            "created_at",
+            "deleted_at"
+          ],
+          "attached_condition": "(`db_hound_fixtures`.`o`.`status` = 'paid')"
+        }
+      }
+    ]
+  }
+}

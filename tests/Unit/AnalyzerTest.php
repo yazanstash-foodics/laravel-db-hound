@@ -134,8 +134,8 @@ it('serves every Fingerprint that needs the same index from one Suggestion', fun
         ->and($result->suggestions[0]->impact())->toBe(1000.0);
 });
 
-it('lists a full-scan query whose predicate it cannot extract as unparsed', function () {
-    $sql = 'select * from `orders` where `status` = ? and `total` > ?';
+it('lists a full-scan query without an indexable predicate as unparsed', function () {
+    $sql = 'select * from `orders` where `status` = ? or `total` > ?';
 
     $result = (new Analyzer(analyzerEncrypter()))->analyze(
         [capturedQuery($sql)],
@@ -445,29 +445,28 @@ it('explains a Fingerprint without a Sample using placeholders typed by column',
         .' and `unknown_column` = ? and lower(`status`) = ? order by `o`.`id` limit ? offset ?';
     $driver = typedDriver();
 
-    $result = (new Analyzer(analyzerEncrypter()))->analyze([sampleless($sql)], $driver);
+    (new Analyzer(analyzerEncrypter()))->analyze([sampleless($sql)], $driver);
 
-    expect($result->unparsed)->toHaveCount(1) // full scan, but the extractor handles single predicates only
-        ->and($driver->explained)->toBe([[
-            'sql' => $sql,
-            'bindings' => [
-                'a',                    // b.code char(3)
-                'a',                    // o.status varchar
-                1,                      // branch_id bigint, resolved without a qualifier
-                1,                      // total decimal
-                '2000-01-01',           // placed_on date
-                '2000-01-01',
-                '2000-01-01 00:00:00',  // paid_at datetime
-                '00:00:00',             // opens_at time
-                2000,                   // fiscal_year year
-                'a',                    // kind enum
-                'a',                    // b.name varchar, resolved without a qualifier
-                'a',                    // unknown column
-                'a',                    // function of a column
-                1,                      // limit
-                1,                      // offset
-            ],
-        ]]);
+    expect($driver->explained)->toBe([[
+        'sql' => $sql,
+        'bindings' => [
+            'a',                    // b.code char(3)
+            'a',                    // o.status varchar
+            1,                      // branch_id bigint, resolved without a qualifier
+            1,                      // total decimal
+            '2000-01-01',           // placed_on date
+            '2000-01-01',
+            '2000-01-01 00:00:00',  // paid_at datetime
+            '00:00:00',             // opens_at time
+            2000,                   // fiscal_year year
+            'a',                    // kind enum
+            'a',                    // b.name varchar, resolved without a qualifier
+            'a',                    // unknown column
+            'a',                    // function of a column
+            1,                      // limit
+            1,                      // offset
+        ],
+    ]]);
 });
 
 it('suggests an index for a Fingerprint without a Sample', function () {

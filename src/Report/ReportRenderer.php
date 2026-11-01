@@ -99,6 +99,7 @@ final class ReportRenderer
             '- **Proposed index name:** `'.$suggestion->indexName().'`',
             '- **Kind:** new index',
             '- **Reasons:** '.implode(', ', $suggestion->reasons),
+            ...array_map(fn (string $note) => '- **Note:** '.$note, $suggestion->notes),
             '',
             '**EXPLAIN summary**',
             '',

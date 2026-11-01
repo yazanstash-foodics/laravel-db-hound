@@ -24,14 +24,23 @@ final class MySqlDriver implements Driver
     {
         $row = $this->withJsonFormatVersion1(fn () => (array) $this->db->selectOne('EXPLAIN FORMAT=JSON '.$sql, $bindings));
 
+        return self::planFromJson((string) reset($row));
+    }
+
+    /**
+     * Summarize `EXPLAIN FORMAT=JSON` output (JSON format version 1). Table
+     * accesses are listed in the order the plan reads them.
+     */
+    public static function planFromJson(string $explain): Plan
+    {
         /** @var array<string, mixed> $json */
-        $json = json_decode((string) reset($row), true, flags: JSON_THROW_ON_ERROR);
+        $json = json_decode($explain, true, flags: JSON_THROW_ON_ERROR);
 
         $accesses = [];
         $filesort = false;
         $temporary = false;
 
-        $this->walk($json, $accesses, $filesort, $temporary);
+        self::walk($json, $accesses, $filesort, $temporary);
 
         return new Plan($accesses, $filesort, $temporary);
     }
@@ -132,8 +141,9 @@ final class MySqlDriver implements Driver
      *
      * @param  array<mixed>  $node
      * @param  list<TableAccess>  $accesses
+     * @param  bool  $materialized  whether the node is part of a materialized subquery or derived table
      */
-    private function walk(array $node, array &$accesses, bool &$filesort, bool &$temporary): void
+    private static function walk(array $node, array &$accesses, bool &$filesort, bool &$temporary, bool $materialized = false): void
     {
         if (($node['using_filesort'] ?? false) === true) {
             $filesort = true;
@@ -149,12 +159,13 @@ final class MySqlDriver implements Driver
                 accessType: (string) $node['access_type'],
                 key: isset($node['key']) ? (string) $node['key'] : null,
                 rowsExamined: isset($node['rows_examined_per_scan']) ? (int) $node['rows_examined_per_scan'] : null,
+                materialized: $materialized,
             );
         }
 
-        foreach ($node as $child) {
+        foreach ($node as $key => $child) {
             if (is_array($child)) {
-                $this->walk($child, $accesses, $filesort, $temporary);
+                self::walk($child, $accesses, $filesort, $temporary, $materialized || $key === 'materialized_from_subquery');
             }
         }
     }

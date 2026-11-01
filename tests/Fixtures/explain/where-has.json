@@ -1,0 +1,68 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "564.30"
+    },
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "branches",
+          "access_type": "ALL",
+          "possible_keys": [
+            "PRIMARY"
+          ],
+          "rows_examined_per_scan": 50,
+          "rows_produced_per_join": 50,
+          "filtered": "100.00",
+          "cost_info": {
+            "read_cost": "0.25",
+            "eval_cost": "5.00",
+            "prefix_cost": "5.25",
+            "data_read_per_join": "4K"
+          },
+          "used_columns": [
+            "id",
+            "status",
+            "deleted_at"
+          ]
+        }
+      },
+      {
+        "table": {
+          "table_name": "<subquery2>",
+          "access_type": "eq_ref",
+          "key": "<auto_distinct_key>",
+          "key_length": "8",
+          "ref": [
+            "db_hound_fixtures.branches.id"
+          ],
+          "rows_examined_per_scan": 1,
+          "materialized_from_subquery": {
+            "using_temporary_table": true,
+            "query_block": {
+              "table": {
+                "table_name": "orders",
+                "access_type": "ALL",
+                "rows_examined_per_scan": 4980,
+                "rows_produced_per_join": 498,
+                "filtered": "10.00",
+                "cost_info": {
+                  "read_cost": "453.45",
+                  "eval_cost": "49.80",
+                  "prefix_cost": "503.25",
+                  "data_read_per_join": "58K"
+                },
+                "used_columns": [
+                  "branch_id",
+                  "status"
+                ],
+                "attached_condition": "(`db_hound_fixtures`.`orders`.`status` = 'paid')"
+              }
+            }
+          }
+        }
+      }
+    ]
+  }
+}

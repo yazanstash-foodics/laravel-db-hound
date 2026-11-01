@@ -15,6 +15,7 @@ beforeEach(function () {
         $table->unsignedBigInteger('branch_id')->index();
         $table->string('customer_email');
         $table->decimal('total', 10, 2);
+        $table->timestamp('placed_at')->nullable();
     });
 
     $rows = [];
@@ -23,6 +24,7 @@ beforeEach(function () {
             'branch_id' => $i % 40,
             'customer_email' => "customer{$i}@example.test",
             'total' => $i,
+            'placed_at' => Carbon::createFromTimestamp(1_700_000_000 + $i * 60),
         ];
     }
     foreach (array_chunk($rows, 500) as $chunk) {
@@ -37,6 +39,7 @@ afterEach(function () {
     date_default_timezone_set('UTC');
     config()->set('db-hound.enabled', false);
     Schema::dropIfExists('hound_orders');
+    Schema::dropIfExists('hound_order_items');
 });
 
 it('suggests an index on an unindexed equality column after flush and analyze', function () {
@@ -250,4 +253,85 @@ it('suggests an index on the unindexed WHERE column of a DELETE', function () {
         ->and($report)->toContain('**Proposed columns (in order):** `customer_email`')
         ->toContain("```sql\ndelete from `hound_orders` where `customer_email` = ?\n```")
         ->not->toContain('secret-where-value');
+});
+
+it('suggests a composite index ordered equality → range, noting the filesort alternative', function () {
+    for ($i = 0; $i < 50; $i++) {
+        DB::table('hound_orders')
+            ->where('customer_email', 'secret-binding-value@example.test')
+            ->where('total', '>', 100)
+            ->orderBy('placed_at')
+            ->get();
+    }
+
+    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:analyze')->assertSuccessful();
+
+    $report = Storage::disk('local')->get('db-hound/latest.md');
+
+    expect($report)
+        ->toContain('**Unparsed queries:** 0')
+        ->and(substr_count($report, '### '))->toBe(1)
+        ->and($report)->toContain('**Proposed columns (in order):** `customer_email`, `total`')
+        ->toContain('**Proposed index name:** `hound_orders_customer_email_total_index`')
+        ->toContain('**Reasons:** full scan, filesort')
+        ->toContain('- **Note:** filesort remains; consider `(customer_email, placed_at, total)` if the range on `total` matches most rows.')
+        ->toContain('- `total`: decimal(10,2)')
+        ->not->toContain('secret-binding-value');
+});
+
+it('suggests an index on the inner table of a whereHas-style EXISTS subquery', function () {
+    Schema::create('hound_order_items', function (Blueprint $table) {
+        $table->id();
+        $table->unsignedBigInteger('hound_order_id');
+        $table->string('kind');
+    });
+
+    $items = array_map(fn (int $i) => ['hound_order_id' => $i % 2000 + 1, 'kind' => ['food', 'drink', 'extra'][$i % 3]], range(1, 3000));
+
+    foreach (array_chunk($items, 500) as $chunk) {
+        DB::table('hound_order_items')->insert($chunk);
+    }
+
+    DB::statement('ANALYZE TABLE hound_order_items');
+
+    for ($i = 0; $i < 50; $i++) {
+        DB::table('hound_orders')
+            ->whereExists(fn ($query) => $query->from('hound_order_items')
+                ->whereColumn('hound_orders.id', 'hound_order_items.hound_order_id')
+                ->where('hound_order_items.kind', 'drink'))
+            ->get();
+    }
+
+    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:analyze')->assertSuccessful();
+
+    $report = Storage::disk('local')->get('db-hound/latest.md');
+
+    expect($report)
+        ->toContain('**Unparsed queries:** 0')
+        ->and(substr_count($report, '### '))->toBe(1)
+        ->and($report)->toContain('**Table:** `hound_order_items`')
+        ->toContain("**Proposed columns (in order):** `kind`\n");
+});
+
+it('lists a query the SQL parser cannot parse as unparsed and still writes the Report', function () {
+    for ($i = 0; $i < 50; $i++) {
+        DB::table('hound_orders')
+            ->where('customer_email', 'secret-binding-value@example.test')
+            ->orderByRaw('customer_email collate utf8mb4_bin')
+            ->get();
+    }
+
+    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:analyze')->assertSuccessful();
+
+    $report = Storage::disk('local')->get('db-hound/latest.md');
+
+    expect($report)
+        ->toContain('No Suggestions.')
+        ->toContain('**Unparsed queries:** 1')
+        ->toContain('the SQL parser could not parse it')
+        ->toContain('order by customer_email collate utf8mb4_bin')
+        ->not->toContain('secret-binding-value');
 });
