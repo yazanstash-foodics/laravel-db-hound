@@ -5,7 +5,8 @@ namespace Foodics\DbHound\Capture;
 /**
  * Captured statistics for one Fingerprint on one connection.
  *
- * Timestamps are Unix seconds. `sample` is the encrypted Sample payload.
+ * Timestamps are Unix seconds. `sample` is the encrypted Sample payload, kept
+ * until `sampleExpiresAt`; a Sample without an expiry is never kept.
  */
 final class QueryAggregate
 {
@@ -19,6 +20,7 @@ final class QueryAggregate
         public float $maxMs,
         public int $firstSeen,
         public int $lastSeen,
+        public ?int $sampleExpiresAt = null,
     ) {}
 
     public function key(): string
@@ -40,9 +42,33 @@ final class QueryAggregate
         $this->lastSeen = max($this->lastSeen, $at);
     }
 
-    public function merge(self $other): void
+    public function hasLiveSample(int $now): bool
     {
-        $this->sample ??= $other->sample;
+        return $this->sample !== null && $this->sampleExpiresAt !== null && $this->sampleExpiresAt > $now;
+    }
+
+    /**
+     * Forget the Sample once it has expired.
+     */
+    public function expireSample(int $now): void
+    {
+        if (! $this->hasLiveSample($now)) {
+            $this->sample = null;
+            $this->sampleExpiresAt = null;
+        }
+    }
+
+    /**
+     * Combine statistics. The live Sample already held wins; an expired one
+     * gives way to the other's.
+     */
+    public function merge(self $other, int $now): void
+    {
+        if (! $this->hasLiveSample($now)) {
+            $this->sample = $other->hasLiveSample($now) ? $other->sample : null;
+            $this->sampleExpiresAt = $other->hasLiveSample($now) ? $other->sampleExpiresAt : null;
+        }
+
         $this->count += $other->count;
         $this->totalMs += $other->totalMs;
         $this->maxMs = max($this->maxMs, $other->maxMs);

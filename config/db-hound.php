@@ -73,6 +73,25 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Samples
+    |--------------------------------------------------------------------------
+    |
+    | Each Fingerprint keeps one Sample (its SQL with real bindings), encrypted
+    | with the app key and used only to run EXPLAIN. The first Sample captured
+    | is kept until it expires after `sample_ttl_days`; the next capture after
+    | that replaces it. With `store_bindings` off no Sample (and so no binding
+    | value) is stored at all: the next flush erases any stored before it was
+    | turned off, and analysis ignores them. EXPLAIN then runs the Fingerprint
+    | with placeholder values that match each column's type.
+    |
+    */
+
+    'store_bindings' => (bool) env('DB_HOUND_STORE_BINDINGS', true),
+
+    'sample_ttl_days' => (float) env('DB_HOUND_SAMPLE_TTL_DAYS', 7),
+
+    /*
+    |--------------------------------------------------------------------------
     | Redis Store
     |--------------------------------------------------------------------------
     |

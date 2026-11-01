@@ -1,10 +1,8 @@
 <?php
 
-use Foodics\DbHound\Capture\Recorder;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 
@@ -190,19 +188,7 @@ it('keeps inline literals out of Redis, db_hound_queries and the Report', functi
         DB::table('hound_orders')->whereRaw("customer_email = 'inline-secret@example.test' and total > 9876.5")->get();
     }
 
-    // Push the in-memory batch, then read every value db-hound holds in Redis.
-    config()->set('db-hound.enabled', false);
-    app(Recorder::class)->push();
-
-    $redis = Redis::connection(config('db-hound.redis.connection'));
-    $clientPrefix = (string) config('database.redis.options.prefix', '');
-    $redisValues = [];
-
-    foreach ($redis->keys(config('db-hound.redis.prefix').'*') as $key) {
-        $key = str_starts_with($key, $clientPrefix) ? substr($key, strlen($clientPrefix)) : $key;
-        $values = str_contains($key, ':query:') ? $redis->hgetall($key) : $redis->smembers($key);
-        $redisValues[] = implode("\n", $values);
-    }
+    $redisValues = pushedRedisValues();
 
     expect($redisValues)->not->toBeEmpty()
         ->and(implode("\n", $redisValues))->toContain('customer_email = ? and total > ?')
@@ -223,4 +209,45 @@ it('keeps inline literals out of Redis, db_hound_queries and the Report', functi
         ->toContain('customer_email = ? and total > ?')
         ->not->toContain('inline-secret')
         ->not->toContain('9876');
+});
+
+it('suggests an index on the unindexed WHERE column of an UPDATE', function () {
+    for ($i = 0; $i < 50; $i++) {
+        DB::table('hound_orders')
+            ->where('customer_email', 'secret-where-value@example.test')
+            ->update(['total' => 12345.67]);
+    }
+
+    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:analyze')->assertSuccessful();
+
+    $report = Storage::disk('local')->get('db-hound/latest.md');
+
+    expect($report)
+        ->toContain('**Unparsed queries:** 0')
+        ->and(substr_count($report, '### '))->toBe(1)
+        ->and($report)->toContain('**Table:** `hound_orders`')
+        ->toContain('**Proposed columns (in order):** `customer_email`')
+        ->toContain('**Reasons:** full scan')
+        ->toContain("```sql\nupdate `hound_orders` set `total` = ? where `customer_email` = ?\n```")
+        ->not->toContain('secret-where-value')
+        ->not->toContain('12345');
+});
+
+it('suggests an index on the unindexed WHERE column of a DELETE', function () {
+    for ($i = 0; $i < 50; $i++) {
+        DB::table('hound_orders')->where('customer_email', 'secret-where-value@example.test')->delete();
+    }
+
+    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:analyze')->assertSuccessful();
+
+    $report = Storage::disk('local')->get('db-hound/latest.md');
+
+    expect($report)
+        ->toContain('**Unparsed queries:** 0')
+        ->and(substr_count($report, '### '))->toBe(1)
+        ->and($report)->toContain('**Proposed columns (in order):** `customer_email`')
+        ->toContain("```sql\ndelete from `hound_orders` where `customer_email` = ?\n```")
+        ->not->toContain('secret-where-value');
 });

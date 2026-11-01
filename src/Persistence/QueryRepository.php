@@ -13,20 +13,39 @@ final class QueryRepository
 {
     public const TABLE = 'db_hound_queries';
 
+    /**
+     * With `$storeBindings` off no Sample is kept or handed out: merging
+     * erases any stored before the switch was turned off.
+     */
     public function __construct(
         private readonly ConnectionInterface $db,
+        private readonly bool $storeBindings = true,
     ) {}
 
     /**
      * Merge aggregates into the table: counts and totals add up, max keeps the
-     * largest, first/last seen widen, and the first stored Sample is kept.
+     * largest, first/last seen widen, and the stored Sample is kept until it
+     * expires. Expired Samples are erased from every row, and every Sample is
+     * when bindings are not stored.
      *
      * @param  list<QueryAggregate>  $aggregates
      */
     public function merge(array $aggregates): void
     {
-        $this->db->transaction(function () use ($aggregates) {
+        $now = Carbon::now()->getTimestamp();
+
+        $this->db->transaction(function () use ($aggregates, $now) {
+            $this->db->table(self::TABLE)
+                ->when(
+                    $this->storeBindings,
+                    fn ($query) => $query->where('sample_expires_at', '<=', $this->toDateTime($now)),
+                    fn ($query) => $query->whereNotNull('sample'),
+                )
+                ->update(['sample' => null, 'sample_expires_at' => null]);
+
             foreach ($aggregates as $aggregate) {
+                $this->forgetUnusableSample($aggregate, $now);
+
                 $existing = $this->db->table(self::TABLE)
                     ->where('connection', $aggregate->connection)
                     ->where('fingerprint_hash', $aggregate->hash)
@@ -46,7 +65,7 @@ final class QueryRepository
                 }
 
                 $merged = $this->hydrate($existing);
-                $merged->merge($aggregate);
+                $merged->merge($aggregate, $now);
 
                 $this->db->table(self::TABLE)
                     ->where('id', $existing->id)
@@ -56,16 +75,42 @@ final class QueryRepository
     }
 
     /**
+     * Every persisted aggregate; a Sample that has expired, or any Sample
+     * when bindings are not stored, is left out.
+     *
      * @return list<QueryAggregate>
      */
     public function all(): array
     {
+        $now = Carbon::now()->getTimestamp();
+
         return $this->db->table(self::TABLE)
             ->orderBy('id')
             ->get()
-            ->map(fn (object $row) => $this->hydrate($row))
+            ->map(function (object $row) use ($now) {
+                $aggregate = $this->hydrate($row);
+                $this->forgetUnusableSample($aggregate, $now);
+
+                return $aggregate;
+            })
             ->values()
             ->all();
+    }
+
+    /**
+     * Drop the aggregate's Sample once it has expired, or always when
+     * bindings are not stored.
+     */
+    private function forgetUnusableSample(QueryAggregate $aggregate, int $now): void
+    {
+        if ($this->storeBindings) {
+            $aggregate->expireSample($now);
+
+            return;
+        }
+
+        $aggregate->sample = null;
+        $aggregate->sampleExpiresAt = null;
     }
 
     /**
@@ -75,6 +120,7 @@ final class QueryRepository
     {
         return [
             'sample' => $aggregate->sample,
+            'sample_expires_at' => $aggregate->sampleExpiresAt === null ? null : $this->toDateTime($aggregate->sampleExpiresAt),
             'count' => $aggregate->count,
             'total_ms' => $aggregate->totalMs,
             'max_ms' => $aggregate->maxMs,
@@ -96,6 +142,9 @@ final class QueryRepository
             maxMs: (float) $row->max_ms,
             firstSeen: Carbon::parse($row->first_seen_at, date_default_timezone_get())->getTimestamp(),
             lastSeen: Carbon::parse($row->last_seen_at, date_default_timezone_get())->getTimestamp(),
+            sampleExpiresAt: $row->sample_expires_at === null
+                ? null
+                : Carbon::parse($row->sample_expires_at, date_default_timezone_get())->getTimestamp(),
         );
     }
 

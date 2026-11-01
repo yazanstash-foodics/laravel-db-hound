@@ -49,6 +49,8 @@ final class Recorder
         private readonly Encrypter $encrypter,
         private readonly CapturePolicy $policy = new CapturePolicy,
         private readonly int $batchSize = 50,
+        private readonly bool $storeBindings = true,
+        private readonly int $sampleTtlSeconds = 7 * 86400,
     ) {}
 
     public function record(QueryExecuted $event): void
@@ -75,18 +77,17 @@ final class Recorder
         if (isset($this->pending[$key])) {
             $this->pending[$key]->record($ms, $now);
         } else {
-            $sample = new Sample($event->sql, $event->connection->prepareBindings($event->bindings));
-
             $this->pending[$key] = new QueryAggregate(
                 connection: $event->connectionName,
                 hash: $fingerprint->hash,
                 sql: $fingerprint->sql,
-                sample: $sample->encrypt($this->encrypter),
+                sample: $this->storeBindings ? $this->sample($event) : null,
                 count: 1,
                 totalMs: $ms,
                 maxMs: $ms,
                 firstSeen: $now,
                 lastSeen: $now,
+                sampleExpiresAt: $this->storeBindings ? $now + $this->sampleTtlSeconds : null,
             );
         }
 
@@ -123,6 +124,15 @@ final class Recorder
         } catch (Throwable) {
             // Fail open: the batch is dropped.
         }
+    }
+
+    /**
+     * The encrypted Sample: the raw SQL (which may hold inline literals) and
+     * its bindings.
+     */
+    private function sample(QueryExecuted $event): string
+    {
+        return (new Sample($event->sql, $event->connection->prepareBindings($event->bindings)))->encrypt($this->encrypter);
     }
 
     /**

@@ -44,10 +44,13 @@ class DbHoundServiceProvider extends PackageServiceProvider
             $app->make(Fingerprinter::class),
             $app->make('encrypter'),
             CapturePolicy::fromConfig((array) $app->make('config')->get('db-hound', [])),
+            storeBindings: (bool) $app->make('config')->get('db-hound.store_bindings', true),
+            sampleTtlSeconds: (int) round((float) $app->make('config')->get('db-hound.sample_ttl_days', 7) * 86400),
         ));
 
         $this->app->bind(QueryRepository::class, fn (Application $app) => new QueryRepository(
             $app->make('db')->connection(),
+            storeBindings: (bool) $app->make('config')->get('db-hound.store_bindings', true),
         ));
     }
 
