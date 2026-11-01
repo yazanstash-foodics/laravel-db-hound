@@ -2,9 +2,9 @@
 
 namespace Foodics\DbHound;
 
+use Foodics\DbHound\Commands\DbHoundCommand;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
-use Foodics\DbHound\Commands\DbHoundCommand;
 
 class DbHoundServiceProvider extends PackageServiceProvider
 {

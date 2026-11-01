@@ -59,13 +59,28 @@ jobs:
           echo "::add-matcher::${{ runner.tool_cache }}/php.json"
           echo "::add-matcher::${{ runner.tool_cache }}/phpunit.json"
 
+      # Composer blocks every package version that has a security advisory. That
+      # covers all tagged Laravel 11 releases. Because minimum-stability is dev,
+      # the solver would then fall back to the unreleased 11.x-dev branch without
+      # an error. This is a throwaway test install, so we allow the advisory-affected
+      # tags and test the real releases we claim to support.
       - name: Install dependencies
         run: |
+          composer config audit.block-insecure false
           composer require "laravel/framework:${{ matrix.laravel }}" "orchestra/testbench:${{ matrix.testbench }}" --no-interaction --no-update
           composer update --${{ matrix.stability }} --prefer-dist --no-interaction
 
       - name: List Installed Dependencies
         run: composer show -D
+
+      - name: Assert a tagged Laravel release was installed
+        shell: bash
+        run: |
+          version=$(composer show laravel/framework --format=json | php -r 'echo json_decode(stream_get_contents(STDIN))->versions[0];')
+          echo "Resolved laravel/framework ${version}"
+          case "$version" in
+            *dev*) echo "::error::laravel/framework resolved to ${version}, not a tagged ${{ matrix.laravel }} release"; exit 1 ;;
+          esac
 
       - name: Execute unit tests
         run: vendor/bin/pest --ci --testsuite=Unit
@@ -120,5 +135,7 @@ jobs:
       - name: Execute integration tests
         run: vendor/bin/pest --ci --testsuite=Integration
         env:
-          DB_PORT: 3306
-          REDIS_PORT: 6379
+          DB_HOUND_MYSQL: ${{ matrix.mysql }}
+          DB_HOUND_MYSQL80_PORT: 3306
+          DB_HOUND_MYSQL84_PORT: 3306
+          DB_HOUND_REDIS_PORT: 6379

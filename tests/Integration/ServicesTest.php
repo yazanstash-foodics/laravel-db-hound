@@ -1,13 +1,15 @@
 <?php
 
+use Foodics\DbHound\Tests\IntegrationTestCase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\Schema;
 
-it('connects to MySQL 8 or newer', function () {
+it('connects to the targeted MySQL version', function () {
+    $target = IntegrationTestCase::targetMysqlVersion();
     $version = DB::selectOne('SELECT VERSION() AS v')->v;
 
-    expect(version_compare($version, '8.0.0', '>='))->toBeTrue("Got MySQL {$version}");
+    expect($version)->toStartWith("{$target}.");
 });
 
 it('returns a JSON plan from EXPLAIN FORMAT=JSON', function () {

@@ -1,6 +1,7 @@
 # Test services for db-hound integration tests.
 # Host ports avoid the defaults (3306/6379) so they don't clash with local installs.
 # Override with DB_HOUND_MYSQL80_PORT / DB_HOUND_MYSQL84_PORT / DB_HOUND_REDIS_PORT.
+# tests/IntegrationTestCase.php reads the same variables, so a remap applies to both.
 
 services:
   mysql80:

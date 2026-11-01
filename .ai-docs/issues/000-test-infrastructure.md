@@ -2,7 +2,7 @@
 title: Test infrastructure — Docker MySQL/Redis, Unit/Integration suites, CI
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: pending-ci
 ---
 
 ## Parent
@@ -20,6 +20,8 @@ Enabling slice for every later issue. Docker Compose provides MySQL 8.0, MySQL 8
 - [x] `composer test:integration` runs against MySQL 8.0; `composer test:integration:84` against MySQL 8.4.
 - [x] Integration smoke test passes on both MySQL versions.
 - [ ] CI: unit job (PHP 8.4/8.5 × Laravel 11/12/13) and integration job (MySQL 8.0/8.4 + Redis) both green.
+
+> **Pending CI:** `.github/workflows/run-tests.yml` is written, but it has not run yet. The `draft` branch is local and has not been pushed, so nothing has run it. The last criterion stays unchecked until the workflow runs green on the remote. Everything else is verified locally. The unit job turns off Composer's advisory blocking for its throwaway install. Without that, every tagged Laravel 11 release gets rejected and the solver quietly falls back to `11.x-dev`. The job also fails if the resolved `laravel/framework` is a dev version.
 
 ## Blocked by
 
