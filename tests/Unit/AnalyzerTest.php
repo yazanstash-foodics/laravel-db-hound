@@ -74,7 +74,7 @@ function fullScan(string $table = 'orders'): Plan
 it('suggests an index on the equality column of a full-scan query', function () {
     $sql = 'select * from `orders` where `status` = ?';
 
-    $result = (new Analyzer(analyzerEncrypter()))->analyze(
+    $result = (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze(
         [capturedQuery($sql, count: 40, totalMs: 2000.0, maxMs: 90.0)],
         fakeDriver([$sql => fullScan()], [new Index('PRIMARY', ['id'], true)]),
     );
@@ -100,7 +100,7 @@ it('suggests an index on the equality column of a full-scan query', function () 
 it('suggests nothing when the plan uses an index', function () {
     $sql = 'select * from `orders` where `branch_id` = ?';
 
-    $result = (new Analyzer(analyzerEncrypter()))->analyze(
+    $result = (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze(
         [capturedQuery($sql)],
         fakeDriver([$sql => new Plan([new TableAccess('orders', 'ref', 'orders_branch_id_index', 120)])]),
     );
@@ -111,7 +111,7 @@ it('suggests nothing when the plan uses an index', function () {
 it('does not suggest an index an existing index already covers as a left prefix', function () {
     $sql = 'select * from `orders` where `branch_id` = ?';
 
-    $result = (new Analyzer(analyzerEncrypter()))->analyze(
+    $result = (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze(
         [capturedQuery($sql)],
         fakeDriver([$sql => fullScan()], [new Index('orders_branch_id_status_index', ['branch_id', 'status'], false)]),
     );
@@ -119,17 +119,17 @@ it('does not suggest an index an existing index already covers as a left prefix'
     expect($result->suggestions)->toBe([]);
 });
 
-it('serves every Fingerprint that needs the same index from one Suggestion', function () {
+it('serves every Fingerprint that needs the same index from one Suggestion, highest impact first', function () {
     $plain = 'select * from `orders` where `status` = ?';
     $limited = 'select * from `orders` where `status` = ? limit 10';
 
-    $result = (new Analyzer(analyzerEncrypter()))->analyze(
+    $result = (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze(
         [capturedQuery($plain, count: 10, totalMs: 100.0), capturedQuery($limited, count: 30, totalMs: 900.0)],
         fakeDriver([$plain => fullScan(), $limited => fullScan()]),
     );
 
     expect($result->suggestions)->toHaveCount(1)
-        ->and($result->suggestions[0]->fingerprints)->toBe([$plain, $limited])
+        ->and($result->suggestions[0]->fingerprints)->toBe([$limited, $plain])
         ->and($result->suggestions[0]->count)->toBe(40)
         ->and($result->suggestions[0]->impact())->toBe(1000.0);
 });
@@ -137,7 +137,7 @@ it('serves every Fingerprint that needs the same index from one Suggestion', fun
 it('lists a full-scan query without an indexable predicate as unparsed', function () {
     $sql = 'select * from `orders` where `status` = ? or `total` > ?';
 
-    $result = (new Analyzer(analyzerEncrypter()))->analyze(
+    $result = (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze(
         [capturedQuery($sql)],
         fakeDriver([$sql => fullScan()]),
     );
@@ -150,7 +150,7 @@ it('lists a full-scan query without an indexable predicate as unparsed', functio
 it('suggests the index on the real table when the query uses a table alias', function () {
     $sql = 'select * from `orders` as `o` where `o`.`status` = ?';
 
-    $result = (new Analyzer(analyzerEncrypter()))->analyze(
+    $result = (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze(
         [capturedQuery($sql)],
         fakeDriver([$sql => fullScan('o')], [new Index('PRIMARY', ['id'], true)]),
     );
@@ -169,7 +169,7 @@ it('suggests the index on the real table when the query uses a table alias', fun
 it('does not suggest an index the real table already has when the query uses a table alias', function () {
     $sql = 'select * from `orders` as `o` where `o`.`status` = ?';
 
-    $result = (new Analyzer(analyzerEncrypter()))->analyze(
+    $result = (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze(
         [capturedQuery($sql)],
         fakeDriver([$sql => fullScan('o')], [new Index('orders_status_index', ['status'], false)]),
     );
@@ -213,7 +213,7 @@ it('lists a Fingerprint whose EXPLAIN fails as unparsed without the binding valu
         }
     };
 
-    $result = (new Analyzer(analyzerEncrypter()))->analyze(
+    $result = (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze(
         [capturedQuery($failing), capturedQuery($healthy)],
         $driver,
     );
@@ -280,7 +280,7 @@ function capturedWrite(string $normalizedSql, string $sampleSql, array $bindings
 it('explains an UPDATE as the SELECT of its WHERE, without the SET bindings', function () {
     $driver = recordingDriver();
 
-    $result = (new Analyzer(analyzerEncrypter()))->analyze([
+    $result = (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze([
         capturedWrite(
             'update `orders` set `note` = ?, `total` = `total` + ? where `status` = ?',
             "update `orders` set `note` = concat(?, 'why?'), `total` = `total` + ? where `status` = ? -- set ?\n",
@@ -301,7 +301,7 @@ it('explains an UPDATE as the SELECT of its WHERE, without the SET bindings', fu
 it('keeps the join, ORDER BY and LIMIT of an UPDATE and the bindings around its SET', function () {
     $driver = recordingDriver();
 
-    (new Analyzer(analyzerEncrypter()))->analyze([
+    (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze([
         capturedWrite(
             'update low_priority `orders` inner join `branches` on `branches`.`id` = `orders`.`branch_id` and `branches`.`kind` = ? set `orders`.`status` = ? where `orders`.`status` = ? order by `orders`.`id` limit ?',
             'update low_priority `orders` inner join `branches` on `branches`.`id` = `orders`.`branch_id` and `branches`.`kind` = ? set `orders`.`status` = ? where `orders`.`status` = ? order by `orders`.`id` limit 5',
@@ -318,7 +318,7 @@ it('keeps the join, ORDER BY and LIMIT of an UPDATE and the bindings around its 
 it('explains a DELETE as the SELECT of the rows it deletes, keeping every binding', function (string $sql, string $select) {
     $driver = recordingDriver();
 
-    (new Analyzer(analyzerEncrypter()))->analyze([capturedWrite($sql, $sql, ['where-value'])], $driver);
+    (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze([capturedWrite($sql, $sql, ['where-value'])], $driver);
 
     expect($driver->explained)->toBe([['sql' => $select, 'bindings' => ['where-value']]]);
 })->with([
@@ -346,7 +346,7 @@ it('explains a DELETE as the SELECT of the rows it deletes, keeping every bindin
 it('does not explain statements that are not a SELECT, UPDATE or DELETE', function (string $sql) {
     $driver = recordingDriver();
 
-    $result = (new Analyzer(analyzerEncrypter()))->analyze([capturedWrite($sql, $sql, ['value'])], $driver);
+    $result = (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze([capturedWrite($sql, $sql, ['value'])], $driver);
 
     expect($driver->explained)->toBe([])
         ->and($result->suggestions)->toBe([])
@@ -360,7 +360,7 @@ it('does not explain statements that are not a SELECT, UPDATE or DELETE', functi
 it('keeps a line comment before SET from swallowing the WHERE of an UPDATE', function () {
     $driver = recordingDriver();
 
-    (new Analyzer(analyzerEncrypter()))->analyze([
+    (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze([
         capturedWrite(
             'update `orders` set `note` = ? where `status` = ?',
             "update `orders` -- touch notes\nset `note` = ? where `status` = ?",
@@ -445,7 +445,7 @@ it('explains a Fingerprint without a Sample using placeholders typed by column',
         .' and `unknown_column` = ? and lower(`status`) = ? order by `o`.`id` limit ? offset ?';
     $driver = typedDriver();
 
-    (new Analyzer(analyzerEncrypter()))->analyze([sampleless($sql)], $driver);
+    (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze([sampleless($sql)], $driver);
 
     expect($driver->explained)->toBe([[
         'sql' => $sql,
@@ -472,7 +472,7 @@ it('explains a Fingerprint without a Sample using placeholders typed by column',
 it('suggests an index for a Fingerprint without a Sample', function () {
     $driver = typedDriver();
 
-    $result = (new Analyzer(analyzerEncrypter()))->analyze([
+    $result = (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze([
         sampleless('update `orders` set `status` = ? where `branch_id` = ?'),
     ], $driver);
 
@@ -488,7 +488,7 @@ it('falls back to placeholders when the Sample cannot be decrypted', function ()
     $query->sample = (new Sample($sql, ['bound-value']))->encrypt(new Encrypter(str_repeat('x', 32), 'aes-256-cbc'));
     $driver = typedDriver();
 
-    $result = (new Analyzer(analyzerEncrypter()))->analyze([$query], $driver);
+    $result = (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze([$query], $driver);
 
     expect($driver->explained)->toBe([['sql' => $sql, 'bindings' => ['a']]])
         ->and($result->suggestions)->toHaveCount(1);
@@ -499,7 +499,7 @@ it('binds valid JSON documents, paths and search modes to JSON function argument
         .' and json_contains(`meta`, ?, ?) and json_contains_path(`meta`, ?, ?) and `status` = ?';
     $driver = typedDriver();
 
-    (new Analyzer(analyzerEncrypter()))->analyze([sampleless($sql)], $driver);
+    (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze([sampleless($sql)], $driver);
 
     expect($driver->explained)->toBe([[
         'sql' => $sql,
@@ -510,7 +510,7 @@ it('binds valid JSON documents, paths and search modes to JSON function argument
 it('lists a Fingerprint without a Sample as unparsed when a literal cannot be a parameter', function (string $sql) {
     $driver = typedDriver();
 
-    $result = (new Analyzer(analyzerEncrypter()))->analyze([sampleless($sql)], $driver);
+    $result = (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze([sampleless($sql)], $driver);
 
     expect($driver->explained)->toBe([])
         ->and($result->unparsed)->toHaveCount(1)

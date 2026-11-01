@@ -2,6 +2,8 @@
 
 namespace Foodics\DbHound;
 
+use Foodics\DbHound\Analysis\Analyzer;
+use Foodics\DbHound\Analysis\Qualification;
 use Foodics\DbHound\Capture\CapturePolicy;
 use Foodics\DbHound\Capture\Fingerprinter;
 use Foodics\DbHound\Capture\Recorder;
@@ -46,6 +48,17 @@ class DbHoundServiceProvider extends PackageServiceProvider
             CapturePolicy::fromConfig((array) $app->make('config')->get('db-hound', [])),
             storeBindings: (bool) $app->make('config')->get('db-hound.store_bindings', true),
             sampleTtlSeconds: (int) round((float) $app->make('config')->get('db-hound.sample_ttl_days', 7) * 86400),
+        ));
+
+        $this->app->bind(Analyzer::class, fn (Application $app) => new Analyzer(
+            $app->make('encrypter'),
+            qualification: Qualification::fromConfig(
+                (array) $app->make('config')->get('db-hound.analysis', []),
+                array_map(
+                    fn (mixed $connection) => is_array($connection) ? (string) ($connection['prefix'] ?? '') : '',
+                    (array) $app->make('config')->get('database.connections', []),
+                ),
+            ),
         ));
 
         $this->app->bind(QueryRepository::class, fn (Application $app) => new QueryRepository(

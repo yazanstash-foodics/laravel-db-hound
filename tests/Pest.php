@@ -1,5 +1,6 @@
 <?php
 
+use Foodics\DbHound\Analysis\Qualification;
 use Foodics\DbHound\Capture\Recorder;
 use Foodics\DbHound\Tests\IntegrationTestCase;
 use Foodics\DbHound\Tests\TestCase;
@@ -39,4 +40,13 @@ function pushedRedisValues(): array
     }
 
     return $values;
+}
+
+/**
+ * A Qualification that lets every Fingerprint and table through, for tests
+ * about what the Analyzer suggests rather than what it skips.
+ */
+function everyFingerprint(): Qualification
+{
+    return new Qualification(minCount: 0, minAvgMs: 0.0, minMaxMs: 0.0, minTableRows: 0);
 }

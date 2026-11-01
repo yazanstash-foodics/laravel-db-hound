@@ -2,6 +2,7 @@
 
 namespace Foodics\DbHound\Analysis;
 
+use Closure;
 use Foodics\DbHound\Capture\QueryAggregate;
 use Foodics\DbHound\Capture\Sample;
 use Foodics\DbHound\Contracts\Driver;
@@ -11,7 +12,8 @@ use Throwable;
 
 /**
  * Turns persisted aggregates into index Suggestions. Pure given its inputs:
- * the aggregates and the Driver for their connection.
+ * the aggregates, the Driver for each connection, and the Qualification
+ * that picks which Fingerprints to explain and which tables to index.
  */
 final class Analyzer
 {
@@ -30,18 +32,28 @@ final class Analyzer
         private readonly ColumnExtractor $extractor = new ColumnExtractor,
         private readonly PlaceholderBindings $placeholders = new PlaceholderBindings,
         private readonly int $examinedRowsThreshold = 1000,
+        public readonly Qualification $qualification = new Qualification,
     ) {}
 
     /**
+     * Explain the qualifying Fingerprints, highest impact first, each on its
+     * connection's Driver: `$drivers` is that Driver for every connection, or
+     * resolves one from a connection name.
+     *
      * @param  list<QueryAggregate>  $queries
+     * @param  Driver|Closure(string): Driver  $drivers
      */
-    public function analyze(array $queries, Driver $driver): AnalysisResult
+    public function analyze(array $queries, Driver|Closure $drivers): AnalysisResult
     {
         /** @var array<string, Suggestion> $suggestions */
         $suggestions = [];
         $unparsed = [];
+        $resolved = [];
+        $explained = 0;
 
-        foreach ($queries as $query) {
+        foreach ($this->qualification->select($queries) as $query) {
+            $driver = $resolved[$query->connection] ??= $drivers instanceof Driver ? $drivers : $drivers($query->connection);
+
             // Writes are explained as the SELECT of the rows they touch.
             $shape = ExplainableQuery::from($query->sql);
 
@@ -62,6 +74,8 @@ final class Analyzer
 
                 continue;
             }
+
+            $explained++;
 
             try {
                 $plan = $driver->explain($sql, $bindings);
@@ -113,7 +127,7 @@ final class Analyzer
             }
         }
 
-        return new AnalysisResult($ranked, $unparsed);
+        return new AnalysisResult($ranked, $unparsed, $explained);
     }
 
     /**
@@ -200,7 +214,7 @@ final class Analyzer
             $references = $extracted->named($access->table);
 
             if (count($references) !== 1) {
-                if ($reasons !== []) {
+                if ($reasons !== [] && ($references === [] || ! $this->allSmall($references, $driver))) {
                     $unparsed[] = new UnparsedQuery($connection, $fingerprint, sprintf(
                         '%s on `%s`, but %s',
                         implode(', ', $reasons),
@@ -238,6 +252,10 @@ final class Analyzer
                 continue;
             }
 
+            if ($this->allSmall([$reference], $driver)) {
+                continue;
+            }
+
             $candidate = IndexCandidate::for($reference, $before, $position === $driving);
 
             if ($candidate === null) {
@@ -256,6 +274,25 @@ final class Analyzer
         }
 
         return $candidates;
+    }
+
+    /**
+     * Whether every one of the table references is a default-database table
+     * under the row threshold, too small for an index to matter. Another
+     * database's table is never known to be small: the Driver cannot count
+     * its rows.
+     *
+     * @param  non-empty-list<TableColumns>  $references
+     */
+    private function allSmall(array $references, Driver $driver): bool
+    {
+        foreach ($references as $reference) {
+            if ($reference->database !== null || $this->qualification->admitsTableRows($driver->rowCount($reference->table))) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

@@ -35,6 +35,10 @@ beforeEach(function () {
     DB::statement('ANALYZE TABLE hound_orders');
 
     config()->set('db-hound.enabled', true);
+    // These tests run each query once, fast, on small tables: let them all qualify.
+    config()->set('db-hound.analysis.min_count', 1);
+    config()->set('db-hound.analysis.min_max_ms', 0);
+    config()->set('db-hound.analysis.min_table_rows', 0);
 });
 
 afterEach(function () {

@@ -86,7 +86,7 @@ function analyzeAgainst(array $plans, array $indexes = []): AnalysisResult
         lastSeen: 1_700_000_500,
     ), array_keys($plans));
 
-    return (new Analyzer($encrypter))->analyze($queries, schemaDriver($plans, $indexes));
+    return (new Analyzer($encrypter, qualification: everyFingerprint()))->analyze($queries, schemaDriver($plans, $indexes));
 }
 
 it('puts the range column after the equality column and leaves out the sort the range blocks', function () {

@@ -8,7 +8,11 @@ namespace Foodics\DbHound\Analysis;
  */
 final class Suggestion
 {
-    /** @var list<string> */
+    /**
+     * The served Fingerprints, highest impact first.
+     *
+     * @var list<string>
+     */
     public array $fingerprints = [];
 
     public int $count = 0;
@@ -122,6 +126,7 @@ final class Suggestion
 
         $this->served[$fingerprint] = [$count, $totalMs, $maxMs];
         $this->fingerprints[] = $fingerprint;
+        usort($this->fingerprints, fn (string $a, string $b) => $this->served[$b][1] <=> $this->served[$a][1]);
         $this->count += $count;
         $this->totalMs += $totalMs;
         $this->maxMs = max($this->maxMs, $maxMs);

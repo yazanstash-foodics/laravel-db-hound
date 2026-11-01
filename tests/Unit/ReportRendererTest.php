@@ -53,6 +53,7 @@ it('renders the header, each Suggestion with its full context, and the unparsed 
 - **Connections:** mysql
 - **Capture coverage:** 2026-10-02 08:15:00 UTC → 2026-11-01 09:59:00 UTC
 - **Fingerprints analyzed:** 4 (1250 captured queries)
+- **Fingerprints explained:** 0
 - **Thresholds:** none
 - **Suggestions:** 1
 - **Unparsed queries:** 1
@@ -217,4 +218,31 @@ it('labels existing indexes that cannot serve lookups with their type or invisib
         ."- `ft_status` (`status`) FULLTEXT\n"
         ."- `idx_status` (`status`) invisible\n",
     );
+});
+
+it('lists the thresholds used and how many Fingerprints qualified for EXPLAIN in the header', function () {
+    $context = new ReportContext(
+        generatedAt: Carbon::parse('2026-11-01 10:00:00', 'UTC'),
+        connections: ['mysql'],
+        firstSeen: Carbon::parse('2026-10-02 08:15:00', 'UTC'),
+        lastSeen: Carbon::parse('2026-11-01 09:59:00', 'UTC'),
+        fingerprints: 4,
+        queries: 1250,
+        thresholds: [
+            'Fingerprint count' => '≥ 10',
+            'Fingerprint latency' => 'avg ≥ 50 ms or max ≥ 500 ms',
+        ],
+    );
+
+    $markdown = (new ReportRenderer)->render($context, new AnalysisResult([], [], explained: 3));
+
+    expect($markdown)->toContain(<<<'MD'
+- **Fingerprints analyzed:** 4 (1250 captured queries)
+- **Fingerprints explained:** 3
+- **Thresholds:**
+  - Fingerprint count: ≥ 10
+  - Fingerprint latency: avg ≥ 50 ms or max ≥ 500 ms
+- **Suggestions:** 0
+
+MD);
 });

@@ -108,6 +108,49 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Analysis
+    |--------------------------------------------------------------------------
+    |
+    | `db-hound:analyze` explains a Fingerprint only when it ran at least
+    | `min_count` times AND its average took at least `min_avg_ms` OR its
+    | slowest run at least `min_max_ms`. Of those, at most `max_fingerprints`
+    | with the most impact (count × avg ms) are explained per run. Tables with
+    | fewer than `min_table_rows` rows (information_schema.TABLES estimate) get
+    | no Suggestion: MySQL scans them whatever their indexes.
+    |
+    | Fingerprints are never explained when they touch an `ignore.tables`
+    | table (names without the connection's table prefix; `*` wildcards
+    | allowed; db-hound's own table is always ignored), start with an
+    | `ignore.statements` keyword, or read a table of an `ignore.schemas`
+    | schema.
+    |
+    */
+
+    'analysis' => [
+        'min_count' => (int) env('DB_HOUND_ANALYSIS_MIN_COUNT', 10),
+        'min_avg_ms' => (float) env('DB_HOUND_ANALYSIS_MIN_AVG_MS', 50),
+        'min_max_ms' => (float) env('DB_HOUND_ANALYSIS_MIN_MAX_MS', 500),
+        'max_fingerprints' => (int) env('DB_HOUND_ANALYSIS_MAX_FINGERPRINTS', 200),
+        'min_table_rows' => (int) env('DB_HOUND_ANALYSIS_MIN_TABLE_ROWS', 1000),
+
+        'ignore' => [
+            'tables' => [
+                'migrations',
+                'jobs',
+                'job_batches',
+                'failed_jobs',
+                'sessions',
+                'cache',
+                'cache_locks',
+                'telescope_*',
+            ],
+            'statements' => ['SHOW', 'SET'],
+            'schemas' => ['information_schema', 'performance_schema'],
+        ],
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Report
     |--------------------------------------------------------------------------
     |

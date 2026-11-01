@@ -62,19 +62,20 @@ final class ReportRenderer
             : 'no captured queries';
 
         $thresholds = $context->thresholds === []
-            ? 'none'
-            : implode(', ', array_map(
-                fn (string $label, string $value) => "{$label} {$value}",
+            ? ['- **Thresholds:** none']
+            : ['- **Thresholds:**', ...array_map(
+                fn (string $label, string $value) => "  - {$label}: {$value}",
                 array_keys($context->thresholds),
                 $context->thresholds,
-            ));
+            )];
 
         return [
             '- **Generated at:** '.$this->time($context->generatedAt),
             '- **Connections:** '.($context->connections === [] ? 'none' : implode(', ', $context->connections)),
             '- **Capture coverage:** '.$coverage,
             "- **Fingerprints analyzed:** {$context->fingerprints} ({$context->queries} captured queries)",
-            '- **Thresholds:** '.$thresholds,
+            "- **Fingerprints explained:** {$result->explained}",
+            ...$thresholds,
             '- **Suggestions:** '.count($result->suggestions),
             '- **Unparsed queries:** '.count($result->unparsed),
         ];

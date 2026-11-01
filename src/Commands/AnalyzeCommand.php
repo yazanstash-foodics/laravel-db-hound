@@ -2,9 +2,7 @@
 
 namespace Foodics\DbHound\Commands;
 
-use Foodics\DbHound\Analysis\AnalysisResult;
 use Foodics\DbHound\Analysis\Analyzer;
-use Foodics\DbHound\Analysis\Suggestion;
 use Foodics\DbHound\Capture\QueryAggregate;
 use Foodics\DbHound\Drivers\MySqlDriver;
 use Foodics\DbHound\Persistence\QueryRepository;
@@ -42,20 +40,10 @@ class AnalyzeCommand extends Command
     ): int {
         $queries = $repository->all();
 
-        $suggestions = [];
-        $unparsed = [];
-
-        foreach ($this->byConnection($queries) as $connection => $group) {
-            $result = $analyzer->analyze($group, new MySqlDriver($databases->connection($connection)));
-
-            array_push($suggestions, ...$result->suggestions);
-            array_push($unparsed, ...$result->unparsed);
-        }
-
-        usort($suggestions, fn (Suggestion $a, Suggestion $b) => $b->impact() <=> $a->impact());
+        $result = $analyzer->analyze($queries, fn (string $connection) => new MySqlDriver($databases->connection($connection)));
 
         $now = Carbon::now();
-        $report = $renderer->render($this->reportContext($now, $queries), new AnalysisResult($suggestions, $unparsed));
+        $report = $renderer->render($this->reportContext($now, $queries, $analyzer->qualification->describe()), $result);
 
         $disk = $filesystems->disk((string) config('db-hound.report.disk', 'local'));
         $directory = trim((string) config('db-hound.report.directory', 'db-hound'), '/');
@@ -64,42 +52,28 @@ class AnalyzeCommand extends Command
         $disk->put($path, $report);
         $disk->put($directory.'/latest.md', $report);
 
-        $this->info(count($suggestions).' Suggestion(s). Report written to '.$path.' (and '.$directory.'/latest.md).');
+        $this->info(count($result->suggestions).' Suggestion(s). Report written to '.$path.' (and '.$directory.'/latest.md).');
 
         return self::SUCCESS;
     }
 
     /**
      * @param  list<QueryAggregate>  $queries
-     * @return array<string, list<QueryAggregate>>
+     * @param  array<string, string>  $thresholds
      */
-    private function byConnection(array $queries): array
-    {
-        $groups = [];
-
-        foreach ($queries as $query) {
-            $groups[$query->connection][] = $query;
-        }
-
-        return $groups;
-    }
-
-    /**
-     * @param  list<QueryAggregate>  $queries
-     */
-    private function reportContext(Carbon $now, array $queries): ReportContext
+    private function reportContext(Carbon $now, array $queries, array $thresholds): ReportContext
     {
         $first = $queries === [] ? null : min(array_map(fn (QueryAggregate $q) => $q->firstSeen, $queries));
         $last = $queries === [] ? null : max(array_map(fn (QueryAggregate $q) => $q->lastSeen, $queries));
 
         return new ReportContext(
             generatedAt: $now,
-            connections: array_keys($this->byConnection($queries)),
+            connections: array_values(array_unique(array_map(fn (QueryAggregate $q) => $q->connection, $queries))),
             firstSeen: $first === null ? null : Carbon::createFromTimestamp($first, date_default_timezone_get()),
             lastSeen: $last === null ? null : Carbon::createFromTimestamp($last, date_default_timezone_get()),
             fingerprints: count($queries),
             queries: array_sum(array_map(fn (QueryAggregate $q) => $q->count, $queries)),
-            thresholds: [],
+            thresholds: $thresholds,
         );
     }
 }

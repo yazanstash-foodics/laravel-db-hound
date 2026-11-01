@@ -19,6 +19,7 @@ afterEach(function () {
         DB::statement('SET SESSION explain_json_format_version = 1');
     }
     Schema::dropIfExists('hound_notes');
+    Schema::dropIfExists('hound_growing');
 });
 
 it('detects a full scan when the server defaults to EXPLAIN JSON format version 2', function () {
@@ -57,4 +58,20 @@ it('reads each index type and visibility', function () {
         'ft_note' => ['FULLTEXT', true],
         'idx_note' => ['BTREE', false],
     ]);
+});
+
+it('counts rows inserted after an earlier row count, without ANALYZE TABLE', function () {
+    Schema::create('hound_growing', function (Blueprint $table) {
+        $table->id();
+        $table->string('status');
+    });
+    $driver = new MySqlDriver(DB::connection());
+
+    // Caches the table's statistics in information_schema while it is empty.
+    expect($driver->rowCount('hound_growing'))->toBe(0);
+
+    DB::table('hound_growing')->insert(array_map(fn ($i) => ['status' => 'open'], range(1, 1500)));
+
+    expect($driver->rowCount('hound_growing'))->toBeGreaterThanOrEqual(1000)
+        ->and(DB::selectOne('SELECT @@SESSION.information_schema_stats_expiry AS expiry')->expiry)->toBe(86400);
 });

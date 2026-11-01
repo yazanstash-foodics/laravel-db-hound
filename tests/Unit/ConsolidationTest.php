@@ -73,7 +73,7 @@ function consolidate(array $fingerprints, array $indexes = []): AnalysisResult
         );
     }
 
-    return (new Analyzer(new Encrypter(str_repeat('k', 32), 'aes-256-cbc')))->analyze($queries, ordersDriver($indexes));
+    return (new Analyzer(new Encrypter(str_repeat('k', 32), 'aes-256-cbc'), qualification: everyFingerprint()))->analyze($queries, ordersDriver($indexes));
 }
 
 it('consolidates a candidate that is a left prefix of another into the longer one, summing impact', function () {

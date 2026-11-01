@@ -16,6 +16,12 @@ final class MySqlDriver implements Driver
      */
     private ?string $jsonFormatVersion = null;
 
+    /**
+     * The session's `information_schema_stats_expiry` (MySQL 8.0+), '' on
+     * servers without it, null until first looked up.
+     */
+    private ?string $statsExpiry = null;
+
     public function __construct(
         private readonly ConnectionInterface $db,
     ) {}
@@ -78,6 +84,39 @@ final class MySqlDriver implements Driver
     }
 
     /**
+     * MySQL 8 caches information_schema.TABLES statistics for
+     * `information_schema_stats_expiry` seconds (a day by default), so a
+     * table read while small would stay small however much it grew. The
+     * expiry is lifted for the lookup and restored afterwards.
+     *
+     * @template T
+     *
+     * @param  callable(): T  $lookup
+     * @return T
+     */
+    private function withFreshStatistics(callable $lookup): mixed
+    {
+        if ($this->statsExpiry === null) {
+            $variable = $this->db->selectOne("SHOW SESSION VARIABLES LIKE 'information_schema_stats_expiry'");
+            $this->statsExpiry = $variable === null ? '' : (string) ((array) $variable)['Value'];
+        }
+
+        $expiry = $this->statsExpiry;
+
+        if ($expiry === '' || $expiry === '0') {
+            return $lookup();
+        }
+
+        $this->db->statement('SET SESSION information_schema_stats_expiry = 0');
+
+        try {
+            return $lookup();
+        } finally {
+            $this->db->statement('SET SESSION information_schema_stats_expiry = '.(int) $expiry);
+        }
+    }
+
+    /**
      * Reads `SELECT *` so servers without `IS_VISIBLE` (MySQL < 8.0.13,
      * MariaDB, which calls it `IGNORED`) still list their indexes.
      */
@@ -113,10 +152,10 @@ final class MySqlDriver implements Driver
 
     public function rowCount(string $table): int
     {
-        $row = $this->db->selectOne(
+        $row = $this->withFreshStatistics(fn () => $this->db->selectOne(
             'SELECT TABLE_ROWS FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?',
             [$table],
-        );
+        ));
 
         $row = array_change_key_case((array) $row, CASE_UPPER);
 

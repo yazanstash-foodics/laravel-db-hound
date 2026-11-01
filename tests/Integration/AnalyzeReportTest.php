@@ -33,6 +33,8 @@ beforeEach(function () {
     DB::statement('ANALYZE TABLE hound_orders');
 
     config()->set('db-hound.enabled', true);
+    // Local queries are fast: let every latency qualify.
+    config()->set('db-hound.analysis.min_max_ms', 0);
 });
 
 afterEach(function () {
