@@ -1,8 +1,10 @@
 <?php
 
+use Foodics\DbHound\Capture\Recorder;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 
@@ -181,4 +183,44 @@ it('reports a Fingerprint whose EXPLAIN fails without leaking its binding values
         ->toContain('**Unparsed queries:** 1')
         ->toContain('42S02')
         ->not->toContain('secret-binding-value');
+});
+
+it('keeps inline literals out of Redis, db_hound_queries and the Report', function () {
+    for ($i = 0; $i < 50; $i++) {
+        DB::table('hound_orders')->whereRaw("customer_email = 'inline-secret@example.test' and total > 9876.5")->get();
+    }
+
+    // Push the in-memory batch, then read every value db-hound holds in Redis.
+    config()->set('db-hound.enabled', false);
+    app(Recorder::class)->push();
+
+    $redis = Redis::connection(config('db-hound.redis.connection'));
+    $clientPrefix = (string) config('database.redis.options.prefix', '');
+    $redisValues = [];
+
+    foreach ($redis->keys(config('db-hound.redis.prefix').'*') as $key) {
+        $key = str_starts_with($key, $clientPrefix) ? substr($key, strlen($clientPrefix)) : $key;
+        $values = str_contains($key, ':query:') ? $redis->hgetall($key) : $redis->smembers($key);
+        $redisValues[] = implode("\n", $values);
+    }
+
+    expect($redisValues)->not->toBeEmpty()
+        ->and(implode("\n", $redisValues))->toContain('customer_email = ? and total > ?')
+        ->not->toContain('inline-secret')
+        ->not->toContain('9876');
+
+    $this->artisan('db-hound:flush')->assertSuccessful();
+
+    $rows = json_encode(DB::table('db_hound_queries')->get());
+
+    expect($rows)->toContain('customer_email = ? and total > ?')
+        ->not->toContain('inline-secret')
+        ->not->toContain('9876');
+
+    $this->artisan('db-hound:analyze')->assertSuccessful();
+
+    expect(Storage::disk('local')->get('db-hound/latest.md'))
+        ->toContain('customer_email = ? and total > ?')
+        ->not->toContain('inline-secret')
+        ->not->toContain('9876');
 });

@@ -76,7 +76,7 @@ it('pushes each batch of 50 queries to the Store in a single write', function ()
 
     expect($aggregates)->toHaveCount(1)
         ->and($aggregates[0]->connection)->toBe('mysql')
-        ->and($aggregates[0]->sql)->toBe('select * from `hound_items` where `sku` = ? limit 1')
+        ->and($aggregates[0]->sql)->toBe('select * from `hound_items` where `sku` = ? limit ?')
         ->and($aggregates[0]->count)->toBe(100)
         ->and($aggregates[0]->maxMs)->toBeGreaterThan(0.0)
         ->and($aggregates[0]->totalMs)->toBeGreaterThanOrEqual($aggregates[0]->maxMs);
@@ -100,6 +100,6 @@ it('pushes the remaining tail of queries when the process shuts down', function 
     $aggregates = app(Store::class)->snapshot();
 
     expect($aggregates)->toHaveCount(1)
-        ->and($aggregates[0]->sql)->toBe('select * from `hound_items` where `sku` = ? limit 1')
+        ->and($aggregates[0]->sql)->toBe('select * from `hound_items` where `sku` = ? limit ?')
         ->and($aggregates[0]->count)->toBe(7);
 });
