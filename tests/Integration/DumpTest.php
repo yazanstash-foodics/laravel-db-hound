@@ -564,3 +564,37 @@ it('creates the Dump owner-only from the start, so nobody can open it before it 
         // The process's umask is left as it was.
         ->and($umaskAfter)->toBe(0);
 });
+
+it('has every field of a Dump line documented in the README', function () {
+    for ($i = 0; $i < 50; $i++) {
+        DB::table('hound_orders')->where('customer_email', 'secret-binding-value@example.test')->get();
+    }
+
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
+
+    $line = runDump()[0];
+
+    // Tables are keys of `schema`, documented as `schema.<table>.…`; index entries by their own keys.
+    $fields = [];
+    foreach ($line as $key => $value) {
+        $fields[] = "`{$key}`";
+
+        if ($key === 'schema') {
+            foreach ($value as $table) {
+                array_push($fields, ...array_map(fn (string $field) => "`schema.<table>.{$field}`", array_keys($table)));
+
+                foreach ($table['indexes'] as $index) {
+                    array_push($fields, ...array_map(fn (string $field) => "`{$field}`", array_keys($index)));
+                }
+            }
+        } elseif (is_array($value)) {
+            array_push($fields, ...array_map(fn (string $field) => "`{$key}.{$field}`", array_keys($value)));
+        }
+    }
+
+    $documentation = readmeSection('Dump format');
+    $undocumented = array_values(array_filter(array_unique($fields), fn (string $field) => ! str_contains($documentation, $field)));
+
+    expect($fields)->toContain('`sample.bindings`', '`stats.impact`', '`schema.<table>.row_count`', '`visible`')
+        ->and($undocumented)->toBe([]);
+});

@@ -91,3 +91,26 @@ function childProcessEnv(): array
         'DB_HOUND_FILE_PATH' => (string) config('db-hound.file.path'),
     ] + getenv();
 }
+
+/**
+ * The README is the contract with engineers and their local coding agents:
+ * these tests keep it in step with what the package actually publishes and
+ * writes.
+ */
+function readme(): string
+{
+    return (string) file_get_contents(__DIR__.'/../README.md');
+}
+
+/**
+ * The part of the README under `$heading`, up to the next `## ` heading.
+ */
+function readmeSection(string $heading): string
+{
+    $start = strpos(readme(), "\n## {$heading}\n");
+    expect($start)->not->toBeFalse("README has no \"## {$heading}\" section");
+
+    $end = strpos(readme(), "\n## ", (int) $start + 1);
+
+    return substr(readme(), (int) $start, $end === false ? null : $end - (int) $start);
+}

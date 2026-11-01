@@ -5,6 +5,7 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 
 beforeEach(function () {
     Storage::fake('local');
@@ -379,4 +380,35 @@ it('lists a query the SQL parser cannot parse as unparsed and still writes the R
         ->toContain('the SQL parser could not parse it')
         ->toContain('order by customer_email collate utf8mb4_bin')
         ->not->toContain('secret-binding-value');
+});
+
+it('reports physical table names on a prefixed connection, which the README tells the agent to strip for Schema::table()', function () {
+    config()->set('database.connections.prefixed', ['prefix' => 'hound_', 'prefix_indexes' => true] + config('database.connections.mysql'));
+
+    for ($i = 0; $i < 50; $i++) {
+        DB::connection('prefixed')->table('orders')->where('customer_email', 'secret-binding-value@example.test')->get();
+    }
+
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
+    $this->artisan('db-hound:analyze')->assertSuccessful();
+
+    $report = Storage::disk('local')->get('db-hound/latest.md');
+    preg_match('/^- \*\*Table:\*\* `([^`]+)`$/m', $report, $table);
+    preg_match('/^- \*\*Proposed index name:\*\* `([^`]+)`$/m', $report, $name);
+
+    // Following the README: strip the connection's `prefix` from the Report's table for Schema::table().
+    Schema::connection('prefixed')->table(Str::after($table[1], 'hound_'), function (Blueprint $blueprint) {
+        $blueprint->index(['customer_email']);
+    });
+
+    $reportFormat = readmeSection('Report format');
+    $agent = readmeSection('For the coding agent: turning Suggestions into migrations');
+
+    expect($table[1])->toBe('hound_orders')
+        ->and($name[1])->toBe('hound_orders_customer_email_index')
+        // The proposed name is the one Laravel gives the index by default.
+        ->and(array_column(Schema::getIndexes('hound_orders'), 'name'))->toContain($name[1])
+        ->and($reportFormat)->toContain("physical name, including the connection's table `prefix`")
+        ->not->toContain('without the table prefix')
+        ->and($agent)->toContain("strip the connection's table `prefix`");
 });

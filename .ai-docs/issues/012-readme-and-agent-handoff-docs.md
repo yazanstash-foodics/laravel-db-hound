@@ -2,7 +2,7 @@
 title: README — install, config, scheduling, SCP workflow, agent instructions
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: done
 ---
 
 ## Parent
@@ -15,11 +15,11 @@ Replace the skeleton README with real documentation: installation, publishing co
 
 ## Acceptance criteria
 
-- [ ] Every config key in the published config is documented with its default.
-- [ ] Report and Dump formats are documented field by field.
-- [ ] Agent handoff section explains how to read a Suggestion and write the migration.
-- [ ] Security section covers Samples encryption, TTL, `store_bindings`, and Dump handling.
-- [ ] CHANGELOG has a v1 entry.
+- [x] Every config key in the published config is documented with its default.
+- [x] Report and Dump formats are documented field by field.
+- [x] Agent handoff section explains how to read a Suggestion and write the migration.
+- [x] Security section covers Samples encryption, TTL, `store_bindings`, and Dump handling.
+- [x] CHANGELOG has a v1 entry.
 
 ## Blocked by
 
