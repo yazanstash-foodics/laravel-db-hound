@@ -9,6 +9,7 @@ use Foodics\DbHound\Capture\Fingerprinter;
 use Foodics\DbHound\Capture\Recorder;
 use Foodics\DbHound\Commands\AnalyzeCommand;
 use Foodics\DbHound\Commands\FlushCommand;
+use Foodics\DbHound\Commands\PruneCommand;
 use Foodics\DbHound\Contracts\Store;
 use Foodics\DbHound\Persistence\QueryRepository;
 use Foodics\DbHound\Stores\RedisStore;
@@ -34,11 +35,15 @@ class DbHoundServiceProvider extends PackageServiceProvider
             ->hasCommands([
                 FlushCommand::class,
                 AnalyzeCommand::class,
+                PruneCommand::class,
             ]);
     }
 
     /** How long a scheduled flush's overlap lock outlives a flush that died. */
     private const FLUSH_LOCK_MINUTES = 10;
+
+    /** How long a scheduled prune's overlap lock outlives a prune that died. */
+    private const PRUNE_LOCK_MINUTES = 60;
 
     public function packageRegistered(): void
     {
@@ -114,6 +119,7 @@ class DbHoundServiceProvider extends PackageServiceProvider
     public function packageBooted(): void
     {
         $this->scheduleFlush();
+        $this->schedulePrune();
 
         $this->app->make('events')->listen(self::UNIT_OF_WORK_EVENTS, function (mixed $event = null) {
             // A job run synchronously is part of the unit that dispatched it.
@@ -161,5 +167,41 @@ class DbHoundServiceProvider extends PackageServiceProvider
                 ->onOneServer()
                 ->when(fn () => (bool) $this->app->make('config')->get('db-hound.enabled'));
         });
+    }
+
+    /**
+     * Prune once a day once the table exists, whether or not capture is on:
+     * retention is the only window Reports have, so it keeps running after
+     * capture is turned off, while an install that has not migrated yet gets
+     * nothing run against it. Apps that set `prune.schedule` to false
+     * register db-hound:prune on their own terms instead.
+     */
+    private function schedulePrune(): void
+    {
+        $this->callAfterResolving(Schedule::class, function (Schedule $schedule) {
+            if (! $this->app->make('config')->get('db-hound.prune.schedule', true)) {
+                return;
+            }
+
+            $schedule->command(PruneCommand::class)
+                ->daily()
+                ->withoutOverlapping(expiresAt: self::PRUNE_LOCK_MINUTES)
+                ->onOneServer()
+                ->when(fn () => $this->queryTableExists());
+        });
+    }
+
+    /**
+     * Whether `db_hound_queries` exists. An unreachable database counts as
+     * no: a schedule filter that throws would abort the app's whole
+     * schedule:run, not just the prune.
+     */
+    private function queryTableExists(): bool
+    {
+        try {
+            return $this->app->make('db')->connection()->getSchemaBuilder()->hasTable(QueryRepository::TABLE);
+        } catch (Throwable) {
+            return false;
+        }
     }
 }

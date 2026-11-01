@@ -138,6 +138,30 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Retention
+    |--------------------------------------------------------------------------
+    |
+    | `db-hound:prune` deletes Fingerprints from `db_hound_queries` that were
+    | not seen for `prune_after_days` days, so removed code paths drop out of
+    | Reports. This is the only time window: `db-hound:analyze` considers
+    | every Fingerprint still in the table, so lower it for fresher Reports.
+    | Rows are deleted at most `prune.chunk_size` per statement to keep locks
+    | short. The package schedules the prune daily once the table exists,
+    | and it keeps running after capture is turned off so Reports never reach
+    | further back than this; set `prune.schedule` to false to register it
+    | yourself instead.
+    |
+    */
+
+    'prune_after_days' => (float) env('DB_HOUND_PRUNE_AFTER_DAYS', 30),
+
+    'prune' => [
+        'schedule' => (bool) env('DB_HOUND_PRUNE_SCHEDULE', true),
+        'chunk_size' => (int) env('DB_HOUND_PRUNE_CHUNK_SIZE', 1000),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Analysis
     |--------------------------------------------------------------------------
     |

@@ -5,6 +5,7 @@ namespace Foodics\DbHound\Persistence;
 use Foodics\DbHound\Capture\QueryAggregate;
 use Illuminate\Database\ConnectionInterface;
 use Illuminate\Support\Carbon;
+use InvalidArgumentException;
 
 /**
  * Persisted aggregates in `db_hound_queries`.
@@ -95,6 +96,38 @@ final class QueryRepository
             })
             ->values()
             ->all();
+    }
+
+    /**
+     * Delete every Fingerprint last seen before `$cutoff`, at most
+     * `$chunkSize` rows per statement so no single delete holds its locks
+     * for long. Returns how many rows were deleted.
+     */
+    public function deleteNotSeenSince(int $cutoff, int $chunkSize): int
+    {
+        if ($chunkSize < 1) {
+            throw new InvalidArgumentException("Chunk size must be at least 1, got {$chunkSize}.");
+        }
+
+        $cutoff = $this->toDateTime($cutoff);
+        $deleted = 0;
+
+        // One statement per chunk, with no id list to bind: a statement holds
+        // at most 65,535 placeholders. It walks the last_seen_at index, so it
+        // only locks stale rows, and a row a concurrent flush has just seen
+        // again no longer matches.
+        do {
+            $chunk = $this->db->table(self::TABLE)
+                ->where('last_seen_at', '<', $cutoff)
+                ->orderBy('last_seen_at')
+                ->orderBy('id')
+                ->limit($chunkSize)
+                ->delete();
+
+            $deleted += $chunk;
+        } while ($chunk === $chunkSize);
+
+        return $deleted;
     }
 
     /**
