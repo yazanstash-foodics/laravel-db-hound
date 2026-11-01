@@ -77,10 +77,14 @@ final class MySqlDriver implements Driver
         }
     }
 
+    /**
+     * Reads `SELECT *` so servers without `IS_VISIBLE` (MySQL < 8.0.13,
+     * MariaDB, which calls it `IGNORED`) still list their indexes.
+     */
     public function indexes(string $table): array
     {
         $rows = $this->db->select(
-            'SELECT INDEX_NAME, COLUMN_NAME, NON_UNIQUE FROM information_schema.STATISTICS
+            'SELECT * FROM information_schema.STATISTICS
              WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
              ORDER BY INDEX_NAME, SEQ_IN_INDEX',
             [$table],
@@ -93,12 +97,15 @@ final class MySqlDriver implements Driver
             $name = (string) $row['INDEX_NAME'];
             $grouped[$name]['columns'][] = (string) $row['COLUMN_NAME'];
             $grouped[$name]['unique'] = (int) $row['NON_UNIQUE'] === 0;
+            $grouped[$name]['type'] = strtoupper((string) ($row['INDEX_TYPE'] ?? 'BTREE'));
+            $grouped[$name]['visible'] = strtoupper((string) ($row['IS_VISIBLE'] ?? 'YES')) !== 'NO'
+                && strtoupper((string) ($row['IGNORED'] ?? 'NO')) !== 'YES';
         }
 
         $indexes = [];
 
         foreach ($grouped as $name => $index) {
-            $indexes[] = new Index((string) $name, $index['columns'], $index['unique']);
+            $indexes[] = new Index((string) $name, $index['columns'], $index['unique'], $index['type'], $index['visible']);
         }
 
         return $indexes;

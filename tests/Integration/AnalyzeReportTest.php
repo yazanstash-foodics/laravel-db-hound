@@ -280,6 +280,47 @@ it('suggests a composite index ordered equality → range, noting the filesort a
         ->not->toContain('secret-binding-value');
 });
 
+it('consolidates a Suggestion that is a left prefix of another into one index serving both Fingerprints', function () {
+    for ($i = 0; $i < 50; $i++) {
+        DB::table('hound_orders')->where('customer_email', 'secret-binding-value@example.test')->get();
+        DB::table('hound_orders')->where('customer_email', 'secret-binding-value@example.test')->orderBy('placed_at')->get();
+    }
+
+    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:analyze')->assertSuccessful();
+
+    $report = Storage::disk('local')->get('db-hound/latest.md');
+
+    expect($report)
+        ->toContain('**Unparsed queries:** 0')
+        ->and(substr_count($report, '### '))->toBe(1)
+        ->and($report)->toContain('**Proposed columns (in order):** `customer_email`, `placed_at`')
+        ->toContain('**Kind:** new index')
+        ->toContain('**Served Fingerprints (2)**')
+        ->toContain("```sql\nselect * from `hound_orders` where `customer_email` = ?\n```")
+        ->toContain("```sql\nselect * from `hound_orders` where `customer_email` = ? order by `placed_at` asc\n```")
+        ->toMatch('/\| 100 \| [\d.]+ \| [\d.]+ \| [\d.,]+ \|/')
+        ->not->toContain('secret-binding-value');
+});
+
+it('proposes extending an existing index that is a left prefix of the needed one', function () {
+    for ($i = 0; $i < 50; $i++) {
+        DB::table('hound_orders')->where('branch_id', 7)->orderBy('placed_at')->get();
+    }
+
+    $this->artisan('db-hound:flush')->assertSuccessful();
+    $this->artisan('db-hound:analyze')->assertSuccessful();
+
+    $report = Storage::disk('local')->get('db-hound/latest.md');
+
+    expect($report)
+        ->toContain('**Unparsed queries:** 0')
+        ->and(substr_count($report, '### '))->toBe(1)
+        ->and($report)->toContain('### 1. `hound_orders` (`branch_id`, `placed_at`) — extends `hound_orders_branch_id_index`')
+        ->toContain('**Kind:** extend existing index `hound_orders_branch_id_index` (`branch_id`) to (`branch_id`, `placed_at`): add this one first, then drop `hound_orders_branch_id_index` (dropping it first fails if a foreign key needs it, and leaves the table without an index on `branch_id` meanwhile)')
+        ->toContain('filesort');
+});
+
 it('suggests an index on the inner table of a whereHas-style EXISTS subquery', function () {
     Schema::create('hound_order_items', function (Blueprint $table) {
         $table->id();

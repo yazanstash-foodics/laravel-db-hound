@@ -98,10 +98,57 @@ final class Analyzer
             }
         }
 
-        $ranked = array_values($suggestions);
+        $ranked = $this->consolidate(array_values($suggestions));
         usort($ranked, fn (Suggestion $a, Suggestion $b) => $b->impact() <=> $a->impact());
 
+        // An existing index can be replaced once: by the Suggestion with the most impact.
+        $taken = [];
+
+        foreach ($ranked as $suggestion) {
+            $key = $suggestion->connection.'|'.$suggestion->table;
+            $suggestion->extends = $suggestion->extendable($taken[$key] ?? []);
+
+            if ($suggestion->extends !== null) {
+                $taken[$key][] = $suggestion->extends->name;
+            }
+        }
+
         return new AnalysisResult($ranked, $unparsed);
+    }
+
+    /**
+     * Fold each Suggestion into one whose index also serves it (it is a
+     * left prefix of that one's columns), so a table gets one index instead
+     * of several overlapping ones. A Suggestion several others contain goes
+     * to the one with the most impact.
+     *
+     * @param  list<Suggestion>  $suggestions
+     * @return list<Suggestion>
+     */
+    private function consolidate(array $suggestions): array
+    {
+        // Longest first: a chain of prefixes ends up in its longest member.
+        usort($suggestions, fn (Suggestion $a, Suggestion $b) => count($b->columns) <=> count($a->columns));
+
+        $kept = [];
+
+        foreach ($suggestions as $suggestion) {
+            $into = null;
+
+            foreach ($kept as $longer) {
+                if ($longer->contains($suggestion) && ($into === null || $longer->impact() > $into->impact())) {
+                    $into = $longer;
+                }
+            }
+
+            if ($into === null) {
+                $kept[] = $suggestion;
+            } else {
+                $into->absorb($suggestion);
+            }
+        }
+
+        return $kept;
     }
 
     /**

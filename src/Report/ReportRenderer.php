@@ -15,8 +15,6 @@ use Foodics\DbHound\Analysis\Suggestion;
  */
 final class ReportRenderer
 {
-    private const MAX_EXAMPLE_FINGERPRINTS = 3;
-
     public function render(ReportContext $context, AnalysisResult $result): string
     {
         $lines = [
@@ -87,17 +85,22 @@ final class ReportRenderer
      */
     private function suggestion(int $position, Suggestion $suggestion): array
     {
-        $columns = implode(', ', array_map(fn (string $column) => "`{$column}`", $suggestion->columns));
+        $columns = $this->columns($suggestion->columns);
+        $extends = $suggestion->extends;
 
         $lines = [
-            "### {$position}. `{$suggestion->table}` ({$columns})",
+            "### {$position}. `{$suggestion->table}` ({$columns})".($extends === null ? '' : " — extends `{$extends->name}`"),
             '',
             '- **Table:** `'.$suggestion->table.'`',
             '- **Connection:** '.$suggestion->connection,
             '- **Table rows (estimate):** '.number_format($suggestion->rowCount),
             '- **Proposed columns (in order):** '.$columns,
             '- **Proposed index name:** `'.$suggestion->indexName().'`',
-            '- **Kind:** new index',
+            '- **Kind:** '.($extends === null
+                ? 'new index'
+                : "extend existing index `{$extends->name}` ({$this->columns($extends->columns)}) to ({$columns}): "
+                    ."add this one first, then drop `{$extends->name}` (dropping it first fails if a foreign key needs it, "
+                    ."and leaves the table without an index on {$this->columns($extends->columns)} meanwhile)"),
             '- **Reasons:** '.implode(', ', $suggestion->reasons),
             ...array_map(fn (string $note) => '- **Note:** '.$note, $suggestion->notes),
             '',
@@ -146,11 +149,11 @@ final class ReportRenderer
                 number_format($suggestion->impact(), 2),
             ),
             '',
-            '**Example Fingerprints**',
+            '**Served Fingerprints ('.count($suggestion->fingerprints).')**',
             '',
         );
 
-        foreach (array_slice($suggestion->fingerprints, 0, self::MAX_EXAMPLE_FINGERPRINTS) as $fingerprint) {
+        foreach ($suggestion->fingerprints as $fingerprint) {
             array_push($lines, '```sql', $fingerprint, '```', '');
         }
 
@@ -159,9 +162,18 @@ final class ReportRenderer
 
     private function index(Index $index): string
     {
-        $columns = implode(', ', array_map(fn (string $column) => "`{$column}`", $index->columns));
+        return "- `{$index->name}` ({$this->columns($index->columns)})"
+            .($index->unique ? ' unique' : '')
+            .(strtoupper($index->type) === 'BTREE' ? '' : ' '.strtoupper($index->type))
+            .($index->visible ? '' : ' invisible');
+    }
 
-        return "- `{$index->name}` ({$columns})".($index->unique ? ' unique' : '');
+    /**
+     * @param  list<string>  $columns
+     */
+    private function columns(array $columns): string
+    {
+        return implode(', ', array_map(fn (string $column) => "`{$column}`", $columns));
     }
 
     private function time(DateTimeInterface $time): string

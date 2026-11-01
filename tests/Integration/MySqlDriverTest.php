@@ -36,3 +36,25 @@ it('detects a full scan when the server defaults to EXPLAIN JSON format version 
         ->and($plan->accesses[0]->rowsExamined)->toBeGreaterThan(0)
         ->and(DB::selectOne("SHOW SESSION VARIABLES LIKE 'explain_json_format_version'")->Value)->toBe('2');
 });
+
+it('reads each index type and visibility', function () {
+    Schema::table('hound_notes', function (Blueprint $table) {
+        $table->fullText('note', 'ft_note');
+        $table->index('note', 'idx_note');
+    });
+    DB::statement('ALTER TABLE `hound_notes` ALTER INDEX `idx_note` INVISIBLE');
+
+    $indexes = [];
+
+    foreach ((new MySqlDriver(DB::connection()))->indexes('hound_notes') as $index) {
+        $indexes[$index->name] = [$index->type, $index->visible];
+    }
+
+    ksort($indexes);
+
+    expect($indexes)->toBe([
+        'PRIMARY' => ['BTREE', true],
+        'ft_note' => ['FULLTEXT', true],
+        'idx_note' => ['BTREE', false],
+    ]);
+});

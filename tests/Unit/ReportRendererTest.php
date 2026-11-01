@@ -90,7 +90,7 @@ it('renders the header, each Suggestion with its full context, and the unparsed 
 | --- | --- | --- | --- |
 | 1,200 | 41.67 | 310.50 | 50,000.00 |
 
-**Example Fingerprints**
+**Served Fingerprints (2)**
 
 ```sql
 select * from `orders` where `status` = ?
@@ -119,7 +119,7 @@ it('says so when there is nothing to suggest', function () {
         ->toContain("## Unparsed queries\n\nNone.\n");
 });
 
-it('shows at most three example Fingerprints per Suggestion', function () {
+it('lists every Fingerprint a Suggestion serves', function () {
     $suggestion = new Suggestion(
         connection: 'mysql',
         table: 'orders',
@@ -138,8 +138,10 @@ it('shows at most three example Fingerprints per Suggestion', function () {
 
     $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult([$suggestion], []));
 
-    expect(substr_count($markdown, '```sql'))->toBe(3)
-        ->and($markdown)->toContain('- none');
+    expect(substr_count($markdown, '```sql'))->toBe(5)
+        ->and($markdown)->toContain('**Served Fingerprints (5)**')
+        ->toContain("```sql\nselect * from `orders` where `status` = ? limit 5\n```")
+        ->toContain('- none');
 });
 
 it('renders the alternative note of a Suggestion whose index leaves a filesort', function () {
@@ -163,5 +165,56 @@ it('renders the alternative note of a Suggestion whose index leaves a filesort',
         "- **Reasons:** full scan, filesort\n"
         ."- **Note:** filesort remains; consider `(status, created_at, total)` if the range on `total` matches most rows.\n"
         ."\n**EXPLAIN summary**",
+    );
+});
+
+it('marks a Suggestion that extends an existing index with the index it replaces', function () {
+    $existing = new Index('idx_branch', ['branch_id'], false);
+    $suggestion = new Suggestion(
+        connection: 'mysql',
+        table: 'orders',
+        columns: ['branch_id', 'status'],
+        reasons: ['no index used'],
+        rowCount: 5000,
+        existingIndexes: [new Index('PRIMARY', ['id'], true), $existing],
+        columnTypes: ['branch_id' => 'bigint unsigned', 'status' => 'varchar(20)'],
+        access: new TableAccess('orders', 'ref', 'idx_branch', 5000),
+        plan: new Plan([new TableAccess('orders', 'ref', 'idx_branch', 5000)]),
+    );
+    $suggestion->extends = $existing;
+    $suggestion->serve('select * from `orders` where `branch_id` = ? and `status` = ?', 10, 100.0, 20.0);
+
+    $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult([$suggestion], []));
+
+    expect($markdown)
+        ->toContain("### 1. `orders` (`branch_id`, `status`) — extends `idx_branch`\n")
+        ->toContain('- **Kind:** extend existing index `idx_branch` (`branch_id`) to (`branch_id`, `status`): add this one first, then drop `idx_branch` (dropping it first fails if a foreign key needs it, and leaves the table without an index on `branch_id` meanwhile)'."\n")
+        ->not->toContain('new index');
+});
+
+it('labels existing indexes that cannot serve lookups with their type or invisibility', function () {
+    $suggestion = new Suggestion(
+        connection: 'mysql',
+        table: 'orders',
+        columns: ['status'],
+        reasons: ['full scan'],
+        rowCount: 5000,
+        existingIndexes: [
+            new Index('PRIMARY', ['id'], true),
+            new Index('ft_status', ['status'], false, type: 'FULLTEXT'),
+            new Index('idx_status', ['status'], false, visible: false),
+        ],
+        columnTypes: ['status' => 'varchar(20)'],
+        access: new TableAccess('orders', 'ALL', null, 5000),
+        plan: new Plan([new TableAccess('orders', 'ALL', null, 5000)]),
+    );
+    $suggestion->serve('select * from `orders` where `status` = ?', 10, 100.0, 20.0);
+
+    $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult([$suggestion], []));
+
+    expect($markdown)->toContain(
+        "- `PRIMARY` (`id`) unique\n"
+        ."- `ft_status` (`status`) FULLTEXT\n"
+        ."- `idx_status` (`status`) invisible\n",
     );
 });
