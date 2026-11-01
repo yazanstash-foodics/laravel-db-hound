@@ -92,6 +92,18 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Store
+    |--------------------------------------------------------------------------
+    |
+    | Where captured aggregates wait for `db-hound:flush`: `redis` (below), or
+    | `file` for single-server apps without Redis.
+    |
+    */
+
+    'store' => env('DB_HOUND_STORE', 'redis'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Redis Store
     |--------------------------------------------------------------------------
     |
@@ -112,6 +124,32 @@ return [
         'connection' => env('DB_HOUND_REDIS_CONNECTION', 'default'),
         'prefix' => env('DB_HOUND_REDIS_PREFIX', 'db-hound:'),
         'timeout' => (float) env('DB_HOUND_REDIS_TIMEOUT', 0.05),
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | File Store
+    |--------------------------------------------------------------------------
+    |
+    | With the `file` Store, each process appends its captured aggregates as
+    | JSON lines to a file of its own under `path`; a flush renames the files
+    | aside before reading them, so captures arriving meanwhile go to new
+    | files. Every process that captures, and the one that flushes, must be
+    | able to read and write `path`, so it has to be on the same server (a
+    | local disk: it relies on file locks). Directories and files are created
+    | with the permissions the umask allows: for a web user and a cron user
+    | sharing a group, use a umask that keeps group write (0002). A flush
+    | that cannot move or delete a file fails rather than skip it.
+    | Encrypted Samples stay in these files until a flush takes them, which
+    | the flush age threshold bounds; the scheduled flush keeps running for
+    | the `file` Store after capture is turned off, so it still does.
+    | `flush.max_bytes` counts the size of the buffered lines, which repeat
+    | a Fingerprint's SQL on every push.
+    |
+    */
+
+    'file' => [
+        'path' => env('DB_HOUND_FILE_PATH', storage_path('db-hound/store')),
     ],
 
     /*

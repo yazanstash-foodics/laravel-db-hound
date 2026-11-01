@@ -2,6 +2,7 @@
 
 use Foodics\DbHound\Analysis\Qualification;
 use Foodics\DbHound\Capture\Recorder;
+use Foodics\DbHound\Contracts\Store;
 use Foodics\DbHound\Tests\IntegrationTestCase;
 use Foodics\DbHound\Tests\TestCase;
 use Illuminate\Support\Facades\Redis;
@@ -49,4 +50,44 @@ function pushedRedisValues(): array
 function everyFingerprint(): Qualification
 {
     return new Qualification(minCount: 0, minAvgMs: 0.0, minMaxMs: 0.0, minTableRows: 0);
+}
+
+/*
+ * Every Store driver, for the shared Store contract: each test using it runs
+ * once per driver, after useStore() switched to it.
+ */
+dataset('stores', ['redis', 'file']);
+
+/**
+ * Switch db-hound to the `$driver` Store, dropping any Store and Recorder
+ * already built for the previous one. Other drivers get a Redis connection
+ * that refuses every connection, so a test passes only when the selected
+ * driver alone holds the data.
+ */
+function useStore(string $driver): void
+{
+    config()->set('db-hound.store', $driver);
+
+    if ($driver !== 'redis') {
+        config()->set('database.redis.db-hound-unreachable', ['host' => '127.0.0.1', 'port' => 1, 'database' => 0]);
+        config()->set('db-hound.redis.connection', 'db-hound-unreachable');
+    }
+
+    app()->forgetInstance(Store::class);
+    app()->forgetInstance(Recorder::class);
+}
+
+/**
+ * The environment for a child process (see tests/Fixtures) that must use the
+ * same MySQL server and Store as the test.
+ *
+ * @return array<string, string>
+ */
+function childProcessEnv(): array
+{
+    return [
+        'DB_HOUND_MYSQL' => IntegrationTestCase::targetMysqlVersion(),
+        'DB_HOUND_STORE' => (string) config('db-hound.store'),
+        'DB_HOUND_FILE_PATH' => (string) config('db-hound.file.path'),
+    ] + getenv();
 }

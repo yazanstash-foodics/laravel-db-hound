@@ -3,6 +3,7 @@
 namespace Foodics\DbHound\Tests;
 
 use Illuminate\Contracts\Config\Repository;
+use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\Schema;
 use InvalidArgumentException;
@@ -40,11 +41,25 @@ class IntegrationTestCase extends TestCase
         return $target;
     }
 
+    /** A directory of its own for the file Store, removed after each test. */
+    private ?string $fileStorePath = null;
+
     protected function setUp(): void
     {
         parent::setUp();
 
         $this->freshDbHoundState();
+    }
+
+    protected function tearDown(): void
+    {
+        if ($this->fileStorePath !== null) {
+            is_dir($this->fileStorePath)
+                ? (new Filesystem)->deleteDirectory($this->fileStorePath)
+                : @unlink($this->fileStorePath);
+        }
+
+        parent::tearDown();
     }
 
     /**
@@ -82,6 +97,9 @@ class IntegrationTestCase extends TestCase
         parent::getEnvironmentSetUp($app);
 
         self::configureServices($app['config']);
+
+        $this->fileStorePath = sys_get_temp_dir().'/db-hound-tests-'.bin2hex(random_bytes(8));
+        $app['config']->set('db-hound.file.path', $this->fileStorePath);
     }
 
     /**

@@ -44,7 +44,9 @@ afterEach(function () {
     Schema::dropIfExists('hound_order_items');
 });
 
-it('suggests an index on an unindexed equality column after flush and analyze', function () {
+it('suggests an index on an unindexed equality column after flush and analyze', function (string $driver) {
+    useStore($driver);
+
     for ($i = 0; $i < 50; $i++) {
         DB::table('hound_orders')->where('customer_email', 'secret-binding-value@example.test')->get();
     }
@@ -61,7 +63,7 @@ it('suggests an index on an unindexed equality column after flush and analyze', 
         ->toContain('(`customer_email`)')
         ->toContain('full scan')
         ->not->toContain('secret-binding-value');
-});
+})->with('stores');
 
 it('suggests nothing for the same query on an indexed column', function () {
     for ($i = 0; $i < 50; $i++) {

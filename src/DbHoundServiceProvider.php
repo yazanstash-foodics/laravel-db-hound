@@ -12,6 +12,7 @@ use Foodics\DbHound\Commands\FlushCommand;
 use Foodics\DbHound\Commands\PruneCommand;
 use Foodics\DbHound\Contracts\Store;
 use Foodics\DbHound\Persistence\QueryRepository;
+use Foodics\DbHound\Stores\FileStore;
 use Foodics\DbHound\Stores\RedisStore;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Foundation\Application;
@@ -20,6 +21,8 @@ use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Queue\Jobs\SyncJob;
 use Illuminate\Redis\Connections\Connection;
 use Illuminate\Redis\RedisManager;
+use Illuminate\Support\Carbon;
+use InvalidArgumentException;
 use Spatie\LaravelPackageTools\Package;
 use Spatie\LaravelPackageTools\PackageServiceProvider;
 use Throwable;
@@ -47,10 +50,7 @@ class DbHoundServiceProvider extends PackageServiceProvider
 
     public function packageRegistered(): void
     {
-        $this->app->singleton(Store::class, fn (Application $app) => new RedisStore(
-            fn () => $this->storeRedisConnection($app),
-            (string) $app->make('config')->get('db-hound.redis.prefix', 'db-hound:'),
-        ));
+        $this->app->singleton(Store::class, fn (Application $app) => $this->store($app));
 
         $this->app->singleton(Recorder::class, fn (Application $app) => new Recorder(
             $app->make(Store::class),
@@ -77,6 +77,28 @@ class DbHoundServiceProvider extends PackageServiceProvider
             $app->make('db')->connection(),
             storeBindings: (bool) $app->make('config')->get('db-hound.store_bindings', true),
         ));
+    }
+
+    /**
+     * The Store the `store` config selects.
+     */
+    private function store(Application $app): Store
+    {
+        $config = $app->make('config');
+        $driver = $config->get('db-hound.store', 'redis');
+
+        return match ($driver) {
+            'redis' => new RedisStore(
+                fn () => $this->storeRedisConnection($app),
+                (string) $config->get('db-hound.redis.prefix', 'db-hound:'),
+            ),
+            'file' => new FileStore(
+                (string) ($config->get('db-hound.file.path') ?: $app->storagePath('db-hound/store')),
+            ),
+            default => throw new InvalidArgumentException(
+                'db-hound.store must be "redis" or "file", got ['.(is_scalar($driver) ? $driver : get_debug_type($driver)).'].',
+            ),
+        };
     }
 
     /**
@@ -138,8 +160,10 @@ class DbHoundServiceProvider extends PackageServiceProvider
                 return;
             }
 
+            $recorder = $this->recorder();
+
             try {
-                $this->app->make(Recorder::class)->record($event);
+                $recorder?->record($event);
             } catch (Throwable) {
                 // Capture fails open: it must never break the query it observes.
             }
@@ -147,9 +171,55 @@ class DbHoundServiceProvider extends PackageServiceProvider
     }
 
     /**
-     * Flush every minute while capture is enabled; the command itself only
-     * acts once a threshold is reached. Apps that set `flush.schedule` to
-     * false register db-hound:flush on their own terms instead.
+     * After the Recorder could not be built (an unknown `store` driver, say),
+     * capture is off without retrying for this many seconds, and the failure
+     * is logged at most this often.
+     */
+    private const RECORDER_COOL_DOWN = 60;
+
+    /** When building the Recorder last failed (Unix seconds). */
+    private ?int $recorderFailedAt = null;
+
+    /**
+     * The Recorder, or null while it can't be built: capture fails open, but
+     * a misconfiguration shows up in the logs, and costs one attempt a
+     * minute rather than one per query.
+     */
+    private function recorder(): ?Recorder
+    {
+        if ($this->recorderFailedAt !== null) {
+            if (Carbon::now()->getTimestamp() - $this->recorderFailedAt < self::RECORDER_COOL_DOWN) {
+                return null;
+            }
+
+            $this->recorderFailedAt = null;
+        }
+
+        try {
+            return $this->app->make(Recorder::class);
+        } catch (Throwable $e) {
+            $this->recorderFailedAt = Carbon::now()->getTimestamp();
+
+            try {
+                $this->app->make('log')->warning(
+                    'db-hound could not start capturing queries; it captures nothing, and tries again in a minute.',
+                    ['exception' => $e],
+                );
+            } catch (Throwable) {
+                // Logging must not break the application either.
+            }
+
+            return null;
+        }
+    }
+
+    /**
+     * Flush every minute while capture is enabled, and with the file Store
+     * even after it is turned off: nothing expires its files, so only a
+     * flush takes what they still hold (encrypted Samples among it) off the
+     * disk. The command itself only acts once a threshold is reached. Apps
+     * that set `flush.schedule` to false register db-hound:flush on their
+     * own terms instead.
      *
      * One server runs it at a time, and a flush that dies without releasing
      * its overlap lock blocks the next ones for minutes, not a day.
@@ -165,7 +235,8 @@ class DbHoundServiceProvider extends PackageServiceProvider
                 ->everyMinute()
                 ->withoutOverlapping(expiresAt: self::FLUSH_LOCK_MINUTES)
                 ->onOneServer()
-                ->when(fn () => (bool) $this->app->make('config')->get('db-hound.enabled'));
+                ->when(fn () => (bool) $this->app->make('config')->get('db-hound.enabled')
+                    || $this->app->make('config')->get('db-hound.store') === 'file');
         });
     }
 

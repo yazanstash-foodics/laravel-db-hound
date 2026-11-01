@@ -18,7 +18,7 @@ function scheduledFlushes(): array
     ));
 }
 
-it('schedules db-hound:flush every minute, running only while capture is enabled', function () {
+it('schedules db-hound:flush every minute, running while capture is enabled', function () {
     $flushes = scheduledFlushes();
 
     expect($flushes)->toHaveCount(1)
@@ -39,4 +39,16 @@ it('lets the app schedule db-hound:flush itself', function () {
     config()->set('db-hound.flush.schedule', false);
 
     expect(scheduledFlushes())->toBeEmpty();
+});
+
+it('keeps running the scheduled flush for the file Store after capture is turned off', function () {
+    // What the file Store buffered, Samples included, must still leave the disk.
+    $flush = scheduledFlushes()[0];
+    config()->set('db-hound.enabled', false);
+
+    config()->set('db-hound.store', 'file');
+    expect($flush->filtersPass(app()))->toBeTrue();
+
+    config()->set('db-hound.store', 'redis');
+    expect($flush->filtersPass(app()))->toBeFalse();
 });

@@ -1,10 +1,10 @@
 <?php
 
 /*
- * Child process for FlushTest: boots the package in a fresh application,
- * prints "ready", waits for a line on stdin, then takes a Store snapshot so it
- * overlaps one the test takes at the same moment. Prints the summed count of
- * the aggregates it got.
+ * Child process for the Store contract: boots the package in a fresh
+ * application, prints "ready", waits for a line on stdin, then takes a
+ * snapshot of the Store DB_HOUND_STORE selects, so it overlaps one the test
+ * takes at the same moment. Prints the summed count of the aggregates it got.
  *
  * Usage: php snapshot-concurrently.php
  */
