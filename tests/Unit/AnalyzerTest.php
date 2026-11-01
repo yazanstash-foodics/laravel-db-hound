@@ -225,6 +225,68 @@ it('lists a Fingerprint whose EXPLAIN fails as unparsed without the binding valu
         ->not->toContain('bound-value');
 });
 
+it('lists a Fingerprint whose schema inspection fails as unparsed and still analyzes the others', function (string $failing, bool $sampled) {
+    $healthy = 'select * from `orders` where `status` = ?';
+    $broken = 'select * from `archive` where `email` = ?';
+
+    $driver = new class($failing) implements Driver
+    {
+        public function __construct(private string $failing) {}
+
+        public function explain(string $sql, array $bindings): Plan
+        {
+            return fullScan(str_contains($sql, '`archive`') ? 'archive' : 'orders');
+        }
+
+        public function indexes(string $table): array
+        {
+            $this->failOn('indexes', $table);
+
+            return [];
+        }
+
+        public function rowCount(string $table): int
+        {
+            $this->failOn('rowCount', $table);
+
+            return 5000;
+        }
+
+        public function columnTypes(string $table): array
+        {
+            $this->failOn('columnTypes', $table);
+
+            return $table === 'orders' ? ['status' => 'varchar(20)'] : ['email' => 'varchar(255)'];
+        }
+
+        private function failOn(string $method, string $table): void
+        {
+            if ($method === $this->failing && $table === 'archive') {
+                $pdo = new PDOException('SQLSTATE[HY000]: General error: 2013 Lost connection to MySQL server during query');
+                $pdo->errorInfo = ['HY000', 2013, 'Lost connection to MySQL server during query'];
+
+                throw new QueryException('mysql', 'select ...', [$table], $pdo);
+            }
+        }
+    };
+
+    // Without a Sample, the Fingerprint is explained with placeholder bindings looked up from the schema.
+    $queries = array_map(
+        fn (QueryAggregate $query) => $sampled ? $query : new QueryAggregate(
+            $query->connection, $query->hash, $query->sql, null, $query->count, $query->totalMs, $query->maxMs, $query->firstSeen, $query->lastSeen,
+        ),
+        [capturedQuery($broken, count: 90), capturedQuery($healthy)],
+    );
+
+    $result = (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze($queries, $driver);
+
+    expect($result->suggestions)->toHaveCount(1)
+        ->and($result->suggestions[0]->table)->toBe('orders')
+        ->and($result->unparsed)->toHaveCount(1)
+        ->and($result->unparsed[0]->sql)->toBe($broken)
+        ->and($result->unparsed[0]->reason)->toBe('inspecting its tables failed (QueryException, SQLSTATE HY000)');
+})->with(['indexes', 'rowCount', 'columnTypes'])->with(['with a Sample' => true, 'without a Sample' => false]);
+
 /**
  * A Driver that records every EXPLAIN it runs and reports a full scan of the
  * first table the SELECT reads.

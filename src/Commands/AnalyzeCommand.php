@@ -40,7 +40,10 @@ class AnalyzeCommand extends Command
     ): int {
         $queries = $repository->all();
 
-        $result = $analyzer->analyze($queries, fn (string $connection) => new MySqlDriver($databases->connection($connection)));
+        $result = $analyzer->analyze($queries, fn (string $connection) => new MySqlDriver(
+            $databases->connection($this->analysisConnection($connection)),
+            (int) config('db-hound.analysis.max_execution_time_ms', 5000),
+        ));
 
         $now = Carbon::now();
         $report = $renderer->render($this->reportContext($now, $queries, $analyzer->qualification->describe()), $result);
@@ -58,6 +61,18 @@ class AnalyzeCommand extends Command
     }
 
     /**
+     * The connection a captured connection's Fingerprints are explained and
+     * its schema inspected on: its `db-hound.analysis.connections` mapping
+     * (a read replica, say), or itself.
+     */
+    private function analysisConnection(string $connection): string
+    {
+        $mapped = ((array) config('db-hound.analysis.connections', []))[$connection] ?? null;
+
+        return is_string($mapped) && $mapped !== '' ? $mapped : $connection;
+    }
+
+    /**
      * @param  list<QueryAggregate>  $queries
      * @param  array<string, string>  $thresholds
      */
@@ -68,7 +83,12 @@ class AnalyzeCommand extends Command
 
         return new ReportContext(
             generatedAt: $now,
-            connections: array_values(array_unique(array_map(fn (QueryAggregate $q) => $q->connection, $queries))),
+            connections: array_map(
+                fn (string $connection) => $this->analysisConnection($connection) === $connection
+                    ? $connection
+                    : $connection.' (analyzed on '.$this->analysisConnection($connection).')',
+                array_values(array_unique(array_map(fn (QueryAggregate $q) => $q->connection, $queries))),
+            ),
             firstSeen: $first === null ? null : Carbon::createFromTimestamp($first, date_default_timezone_get()),
             lastSeen: $last === null ? null : Carbon::createFromTimestamp($last, date_default_timezone_get()),
             fingerprints: count($queries),

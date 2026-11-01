@@ -12,7 +12,7 @@ namespace Foodics\DbHound\Analysis;
 final readonly class ExplainableQuery
 {
     /**
-     * Placeholders, nesting, words and quoted identifiers, skipping quoted
+     * Placeholders, separators, nesting, words and quoted identifiers, skipping quoted
      * strings and comments (which may contain `?` or keywords).
      */
     private const TOKENS = <<<'REGEX'
@@ -27,6 +27,7 @@ final readonly class ExplainableQuery
         | (?<open> \( )
         | (?<close> \) )
         | (?<placeholder> \? )
+        | (?<separator> ; )
         | (?<word> [a-zA-Z_][\w$]*+ )
         ~xs
         REGEX;
@@ -46,6 +47,19 @@ final readonly class ExplainableQuery
     ) {}
 
     /**
+     * Whether the statement is a single SELECT: its first keyword outside
+     * comments and parentheses is SELECT, and no statement follows it.
+     */
+    public static function isSelect(string $sql): bool
+    {
+        $tokens = self::tokens($sql);
+        $separator = array_search('separator', array_column($tokens, 'type'), true);
+
+        return self::firstKeyword($tokens) === 'select'
+            && ($separator === false || $separator === count($tokens) - 1);
+    }
+
+    /**
      * Null when the statement is not a SELECT, UPDATE or DELETE, or its
      * bindings do not match its placeholders.
      *
@@ -56,7 +70,7 @@ final readonly class ExplainableQuery
         $tokens = self::tokens($sql);
         $words = array_values(array_filter($tokens, fn (array $token) => $token['type'] === 'word' && $token['depth'] === 0));
 
-        return match ($words[0]['text'] ?? null) {
+        return match (self::firstKeyword($tokens)) {
             'select' => new self($sql, $bindings),
             'update' => self::fromUpdate($sql, $bindings, $tokens, $words),
             'delete' => self::fromDelete($sql, $bindings, $tokens, $words),
@@ -134,6 +148,20 @@ final readonly class ExplainableQuery
     }
 
     /**
+     * @param  list<array{type: string, text: string, offset: int, depth: int}>  $tokens
+     */
+    private static function firstKeyword(array $tokens): ?string
+    {
+        foreach ($tokens as $token) {
+            if ($token['type'] === 'word' && $token['depth'] === 0) {
+                return $token['text'];
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Whitespace is kept as written: a line comment ends at its newline.
      */
     private static function select(string $tables, string $rest): string
@@ -169,8 +197,8 @@ final readonly class ExplainableQuery
     }
 
     /**
-     * Placeholders, words and quoted identifiers with their offset and
-     * parenthesis depth; words are lowercased.
+     * Placeholders, statement separators, words and quoted identifiers with
+     * their offset and parenthesis depth; words are lowercased.
      *
      * @return list<array{type: string, text: string, offset: int, depth: int}>
      */
@@ -188,6 +216,8 @@ final readonly class ExplainableQuery
                 $depth++;
             } elseif ($match['close'][0] !== null) {
                 $depth = max(0, $depth - 1);
+            } elseif ($match['separator'][0] !== null) {
+                $tokens[] = ['type' => 'separator', 'text' => ';', 'offset' => $offset, 'depth' => $depth];
             } elseif ($match['placeholder'][0] !== null) {
                 $tokens[] = ['type' => 'placeholder', 'text' => '?', 'offset' => $offset, 'depth' => $depth];
             } elseif ($match['word'][0] !== null) {

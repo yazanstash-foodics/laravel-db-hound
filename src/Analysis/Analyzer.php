@@ -65,9 +65,15 @@ final class Analyzer
             $explainable = $sample === null ? null : ExplainableQuery::from($sample->sql, $sample->bindings);
 
             // Without a usable Sample, the Fingerprint itself is explained.
-            [$sql, $bindings] = $explainable === null
-                ? [$shape->sql, $this->placeholders->for($shape->sql, $driver)]
-                : [$explainable->sql, $explainable->bindings];
+            try {
+                [$sql, $bindings] = $explainable === null
+                    ? [$shape->sql, $this->placeholders->for($shape->sql, $driver)]
+                    : [$explainable->sql, $explainable->bindings];
+            } catch (Throwable $e) {
+                $unparsed[] = new UnparsedQuery($query->connection, $query->sql, $this->failure('inspecting its tables', $e));
+
+                continue;
+            }
 
             if ($bindings === null) {
                 $unparsed[] = new UnparsedQuery($query->connection, $query->sql, self::REASON_NEEDS_SAMPLE);
@@ -80,34 +86,47 @@ final class Analyzer
             try {
                 $plan = $driver->explain($sql, $bindings);
             } catch (Throwable $e) {
-                $unparsed[] = new UnparsedQuery($query->connection, $query->sql, $this->explainFailure($e));
+                $unparsed[] = new UnparsedQuery($query->connection, $query->sql, $this->failure('EXPLAIN', $e));
 
                 continue;
             }
 
-            foreach ($this->candidates($query->sql, $shape->sql, $plan, $driver, $unparsed, $query->connection) as [$access, $reference, $reasons, $candidate]) {
-                $table = $reference->table;
-                $indexes = $driver->indexes($table);
+            // Every table is inspected before the Fingerprint serves any Suggestion,
+            // so a failed lookup leaves no Suggestion half-served.
+            $served = [];
 
-                if ($this->alreadyIndexed($indexes, $candidate->columns)) {
-                    continue;
+            try {
+                foreach ($this->candidates($query->sql, $shape->sql, $plan, $driver, $unparsed, $query->connection) as [$access, $reference, $reasons, $candidate]) {
+                    $table = $reference->table;
+                    $indexes = $driver->indexes($table);
+
+                    if ($this->alreadyIndexed($indexes, $candidate->columns)) {
+                        continue;
+                    }
+
+                    $key = $query->connection.'|'.$table.'|'.implode(',', $candidate->columns);
+
+                    $served[] = [$key, $reasons, $candidate->note, $suggestions[$key] ?? new Suggestion(
+                        connection: $query->connection,
+                        table: $table,
+                        columns: $candidate->columns,
+                        reasons: [],
+                        rowCount: $driver->rowCount($table),
+                        existingIndexes: $indexes,
+                        columnTypes: array_intersect_key($driver->columnTypes($table), array_flip($candidate->columns)),
+                        access: $access,
+                        plan: $plan,
+                    )];
                 }
+            } catch (Throwable $e) {
+                $unparsed[] = new UnparsedQuery($query->connection, $query->sql, $this->failure('inspecting its tables', $e));
 
-                $key = $query->connection.'|'.$table.'|'.implode(',', $candidate->columns);
+                continue;
+            }
 
-                $suggestions[$key] ??= new Suggestion(
-                    connection: $query->connection,
-                    table: $table,
-                    columns: $candidate->columns,
-                    reasons: [],
-                    rowCount: $driver->rowCount($table),
-                    existingIndexes: $indexes,
-                    columnTypes: array_intersect_key($driver->columnTypes($table), array_flip($candidate->columns)),
-                    access: $access,
-                    plan: $plan,
-                );
-
-                $suggestions[$key]->flag($reasons, $candidate->note);
+            foreach ($served as [$key, $reasons, $note, $suggestion]) {
+                $suggestions[$key] ??= $suggestion;
+                $suggestions[$key]->flag($reasons, $note);
                 $suggestions[$key]->serve($query->sql, $query->count, $query->totalMs, $query->maxMs);
             }
         }
@@ -188,13 +207,26 @@ final class Analyzer
             return [];
         }
 
+        $columns = function (string $table) use ($driver): array {
+            try {
+                return array_keys($driver->columnTypes($table));
+            } catch (Throwable $e) {
+                throw new TableLookupFailed($e);
+            }
+        };
+
         try {
-            $extracted = $this->extractor->extract($sql, fn (string $table) => array_keys($driver->columnTypes($table)));
+            $extracted = $this->extractor->extract($sql, $columns);
         } catch (UnparseableSql $e) {
             $unparsed[] = new UnparsedQuery($connection, $fingerprint, $e->getMessage());
 
             return [];
         } catch (Throwable $e) {
+            // A failed schema lookup is the database's, not the parser's: the caller reports it.
+            if ($e instanceof TableLookupFailed) {
+                throw $e->failure;
+            }
+
             // A parser bug on one query must not abort the run.
             $unparsed[] = new UnparsedQuery($connection, $fingerprint, 'the SQL parser failed on it ('.class_basename($e).')');
 
@@ -328,15 +360,15 @@ final class Analyzer
     }
 
     /**
-     * Describe a failed EXPLAIN by its error code only: driver messages (and
+     * Describe a failed step by its error code only: driver messages (and
      * QueryException in particular) embed the decrypted binding values.
      */
-    private function explainFailure(Throwable $e): string
+    private function failure(string $step, Throwable $e): string
     {
         // QueryException is a PDOException carrying the driver's errorInfo.
         $code = $e instanceof PDOException ? ($e->errorInfo[0] ?? $e->getCode()) : $e->getCode();
 
-        return 'EXPLAIN failed ('.class_basename($e).($code === 0 || $code === '' ? '' : ', SQLSTATE '.$code).')';
+        return $step.' failed ('.class_basename($e).($code === 0 || $code === '' ? '' : ', SQLSTATE '.$code).')';
     }
 
     /**

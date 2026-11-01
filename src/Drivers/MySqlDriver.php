@@ -2,11 +2,16 @@
 
 namespace Foodics\DbHound\Drivers;
 
+use Foodics\DbHound\Analysis\ExplainableQuery;
 use Foodics\DbHound\Analysis\Index;
 use Foodics\DbHound\Analysis\Plan;
 use Foodics\DbHound\Analysis\TableAccess;
 use Foodics\DbHound\Contracts\Driver;
-use Illuminate\Database\ConnectionInterface;
+use Illuminate\Database\Connection;
+use InvalidArgumentException;
+use LogicException;
+use PDO;
+use Throwable;
 
 final class MySqlDriver implements Driver
 {
@@ -22,15 +27,174 @@ final class MySqlDriver implements Driver
      */
     private ?string $statsExpiry = null;
 
+    /**
+     * The session's `max_execution_time`, '' on servers without it, null
+     * until first looked up.
+     */
+    private ?string $maxExecutionTime = null;
+
+    /**
+     * @param  int  $maxExecutionTimeMs  the session `max_execution_time` an EXPLAIN runs under
+     */
     public function __construct(
-        private readonly ConnectionInterface $db,
+        private readonly Connection $db,
+        private readonly int $maxExecutionTimeMs = 5000,
     ) {}
 
+    /**
+     * A plain `EXPLAIN FORMAT=JSON` (never `EXPLAIN ANALYZE`, which runs the
+     * query) of a SELECT, inside a read-only transaction. Any other
+     * statement is refused before it reaches the server.
+     */
     public function explain(string $sql, array $bindings): Plan
     {
-        $row = $this->withJsonFormatVersion1(fn () => (array) $this->db->selectOne('EXPLAIN FORMAT=JSON '.$sql, $bindings));
+        if (! ExplainableQuery::isSelect($sql)) {
+            throw new InvalidArgumentException('db-hound only EXPLAINs SELECT statements.');
+        }
+
+        $row = $this->onOneSession(fn (PDO $session) => $this->withJsonFormatVersion1($session, fn () => $this->inReadOnlyTransaction(
+            $session,
+            fn () => $this->firstRow($session, 'EXPLAIN FORMAT=JSON '.$sql, $bindings),
+        )));
 
         return self::planFromJson((string) reset($row));
+    }
+
+    /**
+     * Run `$work` on a single session: the connection's read PDO, used
+     * directly. Laravel's query methods would send a SET or START
+     * TRANSACTION to a read/write connection's write PDO but a SELECT to its
+     * read PDO (and, once it is sticky, every later read to the write PDO),
+     * and would silently re-run a statement on a new session after a lost
+     * connection, outside the state set up before it. Each statement is
+     * still logged on the connection.
+     *
+     * @template T
+     *
+     * @param  callable(PDO): T  $work
+     * @return T
+     */
+    private function onOneSession(callable $work): mixed
+    {
+        $this->db->reconnectIfMissingConnection();
+
+        return $work($this->db->getReadPdo());
+    }
+
+    /**
+     * Run the EXPLAIN in a read-only transaction under the session
+     * `max_execution_time`, rolled back and restored afterwards. A
+     * transaction already open on the connection is refused: starting
+     * another would commit it.
+     *
+     * @template T
+     *
+     * @param  callable(): T  $explain
+     * @return T
+     */
+    private function inReadOnlyTransaction(PDO $session, callable $explain): mixed
+    {
+        if ($this->db->transactionLevel() > 0) {
+            throw new LogicException('db-hound cannot EXPLAIN on a connection with an open transaction: starting its read-only transaction would commit it.');
+        }
+
+        $previous = $this->maxExecutionTime ??= $this->sessionVariable($session, 'max_execution_time');
+        $limit = max(0, $this->maxExecutionTimeMs);
+        $restore = $previous === '' || $previous === (string) $limit ? [] : ['SET SESSION max_execution_time = '.(int) $previous];
+
+        return $this->between(
+            $session,
+            ['START TRANSACTION READ ONLY', ...($previous === '' ? [] : ['SET SESSION max_execution_time = '.$limit])],
+            $explain,
+            ['ROLLBACK', ...$restore],
+        );
+    }
+
+    /**
+     * Run `$work` after the `$setUp` statements and before the `$tearDown`
+     * ones, which also run when anything before them fails. A session
+     * whose tear-down fails is in an unknown state (its connection lost,
+     * say), so the connection is dropped and the next statement opens a
+     * fresh session.
+     *
+     * @template T
+     *
+     * @param  list<string>  $setUp
+     * @param  callable(): T  $work
+     * @param  list<string>  $tearDown
+     * @return T
+     */
+    private function between(PDO $session, array $setUp, callable $work, array $tearDown): mixed
+    {
+        try {
+            foreach ($setUp as $statement) {
+                $this->execute($session, $statement);
+            }
+
+            $result = $work();
+        } catch (Throwable $e) {
+            try {
+                $this->tearDown($session, $tearDown);
+            } catch (Throwable) {
+                // The first failure is the one worth reporting.
+            }
+
+            throw $e;
+        }
+
+        $this->tearDown($session, $tearDown);
+
+        return $result;
+    }
+
+    /**
+     * @param  list<string>  $statements
+     */
+    private function tearDown(PDO $session, array $statements): void
+    {
+        try {
+            foreach ($statements as $statement) {
+                $this->execute($session, $statement);
+            }
+        } catch (Throwable $e) {
+            $this->db->disconnect();
+
+            throw $e;
+        }
+    }
+
+    private function execute(PDO $session, string $statement): void
+    {
+        $start = microtime(true);
+        $session->exec($statement);
+        $this->db->logQuery($statement, [], round((microtime(true) - $start) * 1000, 2));
+    }
+
+    /**
+     * @param  array<mixed>  $bindings
+     * @return array<string, mixed>
+     */
+    private function firstRow(PDO $session, string $query, array $bindings = []): array
+    {
+        $start = microtime(true);
+        $statement = $session->prepare($query);
+        $this->db->bindValues($statement, $this->db->prepareBindings($bindings));
+        $statement->execute();
+        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        $statement->closeCursor();
+        $this->db->logQuery($query, $bindings, round((microtime(true) - $start) * 1000, 2));
+
+        return is_array($row) ? $row : [];
+    }
+
+    /**
+     * A session variable's value, '' on servers without it.
+     */
+    private function sessionVariable(PDO $session, string $name): string
+    {
+        $row = $this->firstRow($session, "SHOW SESSION VARIABLES LIKE '{$name}'");
+
+        return (string) ($row['Value'] ?? '');
     }
 
     /**
@@ -61,26 +225,20 @@ final class MySqlDriver implements Driver
      * @param  callable(): T  $explain
      * @return T
      */
-    private function withJsonFormatVersion1(callable $explain): mixed
+    private function withJsonFormatVersion1(PDO $session, callable $explain): mixed
     {
-        if ($this->jsonFormatVersion === null) {
-            $variable = $this->db->selectOne("SHOW SESSION VARIABLES LIKE 'explain_json_format_version'");
-            $this->jsonFormatVersion = $variable === null ? '' : (string) ((array) $variable)['Value'];
-        }
-
-        $version = $this->jsonFormatVersion;
+        $version = $this->jsonFormatVersion ??= $this->sessionVariable($session, 'explain_json_format_version');
 
         if ($version === '' || $version === '1') {
             return $explain();
         }
 
-        $this->db->statement('SET SESSION explain_json_format_version = 1');
-
-        try {
-            return $explain();
-        } finally {
-            $this->db->statement('SET SESSION explain_json_format_version = '.(int) $version);
-        }
+        return $this->between(
+            $session,
+            ['SET SESSION explain_json_format_version = 1'],
+            $explain,
+            ['SET SESSION explain_json_format_version = '.(int) $version],
+        );
     }
 
     /**
@@ -94,26 +252,20 @@ final class MySqlDriver implements Driver
      * @param  callable(): T  $lookup
      * @return T
      */
-    private function withFreshStatistics(callable $lookup): mixed
+    private function withFreshStatistics(PDO $session, callable $lookup): mixed
     {
-        if ($this->statsExpiry === null) {
-            $variable = $this->db->selectOne("SHOW SESSION VARIABLES LIKE 'information_schema_stats_expiry'");
-            $this->statsExpiry = $variable === null ? '' : (string) ((array) $variable)['Value'];
-        }
-
-        $expiry = $this->statsExpiry;
+        $expiry = $this->statsExpiry ??= $this->sessionVariable($session, 'information_schema_stats_expiry');
 
         if ($expiry === '' || $expiry === '0') {
             return $lookup();
         }
 
-        $this->db->statement('SET SESSION information_schema_stats_expiry = 0');
-
-        try {
-            return $lookup();
-        } finally {
-            $this->db->statement('SET SESSION information_schema_stats_expiry = '.(int) $expiry);
-        }
+        return $this->between(
+            $session,
+            ['SET SESSION information_schema_stats_expiry = 0'],
+            $lookup,
+            ['SET SESSION information_schema_stats_expiry = '.(int) $expiry],
+        );
     }
 
     /**
@@ -152,12 +304,13 @@ final class MySqlDriver implements Driver
 
     public function rowCount(string $table): int
     {
-        $row = $this->withFreshStatistics(fn () => $this->db->selectOne(
+        $row = $this->onOneSession(fn (PDO $session) => $this->withFreshStatistics($session, fn () => $this->firstRow(
+            $session,
             'SELECT TABLE_ROWS FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?',
             [$table],
-        ));
+        )));
 
-        $row = array_change_key_case((array) $row, CASE_UPPER);
+        $row = array_change_key_case($row, CASE_UPPER);
 
         return (int) ($row['TABLE_ROWS'] ?? 0);
     }

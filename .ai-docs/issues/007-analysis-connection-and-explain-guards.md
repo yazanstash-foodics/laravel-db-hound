@@ -2,7 +2,7 @@
 title: Analysis connection mapping and EXPLAIN safety guards
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: done
 ---
 
 ## Parent
@@ -15,11 +15,11 @@ A config map from captured connection to analysis connection (e.g. `mysql → my
 
 ## Acceptance criteria
 
-- [ ] With a mapping configured, `EXPLAIN` and schema queries hit the mapped connection (integration test with two connection names).
-- [ ] Without a mapping, the original connection is used.
-- [ ] Non-`SELECT` statements are never sent to `EXPLAIN` unrewritten.
-- [ ] `EXPLAIN` runs in a read-only transaction with `max_execution_time` applied (assert via query log).
-- [ ] An `EXPLAIN` error on one Fingerprint is listed in the Report; other Fingerprints are still analyzed.
+- [x] With a mapping configured, `EXPLAIN` and schema queries hit the mapped connection (integration test with two connection names).
+- [x] Without a mapping, the original connection is used.
+- [x] Non-`SELECT` statements are never sent to `EXPLAIN` unrewritten.
+- [x] `EXPLAIN` runs in a read-only transaction with `max_execution_time` applied (assert via query log).
+- [x] An `EXPLAIN` error on one Fingerprint is listed in the Report; other Fingerprints are still analyzed.
 
 ## Blocked by
 

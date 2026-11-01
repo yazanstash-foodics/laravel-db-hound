@@ -124,9 +124,20 @@ return [
     | `ignore.statements` keyword, or read a table of an `ignore.schemas`
     | schema.
     |
+    | EXPLAIN and schema inspection run on the captured connection, or on the
+    | connection `connections` maps it to (e.g. `'mysql' => 'mysql_replica'`
+    | to analyze on a read replica). Only SELECTs are explained (an UPDATE or
+    | DELETE as the SELECT of the rows it touches), with a plain
+    | `EXPLAIN FORMAT=JSON`, inside a read-only transaction whose session
+    | `max_execution_time` is `max_execution_time_ms`.
+    |
     */
 
     'analysis' => [
+        'connections' => [
+            // 'mysql' => 'mysql_replica',
+        ],
+        'max_execution_time_ms' => (int) env('DB_HOUND_ANALYSIS_MAX_EXECUTION_TIME_MS', 5000),
         'min_count' => (int) env('DB_HOUND_ANALYSIS_MIN_COUNT', 10),
         'min_avg_ms' => (float) env('DB_HOUND_ANALYSIS_MIN_AVG_MS', 50),
         'min_max_ms' => (float) env('DB_HOUND_ANALYSIS_MIN_MAX_MS', 500),
