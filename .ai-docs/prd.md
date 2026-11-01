@@ -1,0 +1,148 @@
+---
+title: db-hound v1 — capture production queries and suggest missing MySQL indexes
+labels: [ready-for-agent]
+status: open
+---
+
+# PRD: db-hound v1
+
+## Problem Statement
+
+Engineers on Laravel applications backed by MySQL find missing indexes reactively: after an endpoint or job is already slow in production, after a customer complains, or after an incident. Local and CI databases are too small to reveal the problem — MySQL happily full-scans a 200-row table — so the queries that matter are only visible under real production data and real access patterns. Even when a slow query is spotted, working out the *right* index (column order, whether an existing index can be extended, whether another query needs an overlapping index on the same table) is manual, error-prone work, and naive fixes pile up near-duplicate indexes on hot multi-tenant tables.
+
+## Solution
+
+db-hound is a Laravel package that, when enabled in production, samples the application's queries with negligible overhead, aggregates them by **Fingerprint** (normalized SQL shape), and stores them. An engineer runs `php artisan db-hound:analyze` on a production host; it runs `EXPLAIN` on the most impactful Fingerprints against a (preferably replica) connection, extracts predicate columns with a real SQL parser, compares against existing indexes, and writes a self-contained Markdown **Report** of ranked index **Suggestions**. The engineer copies the Report to their machine (SCP), where a local coding agent reads it and writes the Laravel migrations in a pair session with the engineer. The package never runs DDL itself.
+
+For deeper investigation, `php artisan db-hound:dump` writes a sensitive JSONL **Dump** with decrypted Samples and raw `EXPLAIN` output for the agent to analyze further.
+
+## Glossary
+
+- **Fingerprint** — normalized SQL shape of a query (literals stripped, `IN` lists collapsed, whitespace/comments normalized) plus its hash. Aggregation key.
+- **Sample** — one example of a Fingerprint's query with real bindings, stored encrypted with a TTL. Used only to run `EXPLAIN`.
+- **Store** — where captured aggregates live before and after flushing (Redis driver, file driver).
+- **Suggestion** — a proposed index (new or extension of an existing one) on a table, with reasons and impact.
+- **Report** — Markdown file of ranked Suggestions plus all context needed to write migrations without production access. Contains no bindings.
+- **Dump** — JSONL file with everything, including decrypted Samples and raw `EXPLAIN`. Always sensitive.
+
+## User Stories
+
+### Enabling & configuring capture
+1. As an engineer, I want db-hound to be disabled by default, so that installing the package never changes production behavior until I opt in.
+2. As an engineer, I want to enable capture with an environment flag, so that I can turn it on per environment without a deploy of code changes.
+3. As an engineer, I want to set a sample rate, so that I can bound the overhead on production traffic.
+4. As an engineer, I want sampling to be decided once per request or job, so that a sampled unit of work captures all its queries and frequency counts stay proportional.
+5. As an engineer, I want a minimum query duration threshold, so that trivially fast queries are not captured.
+6. As an engineer, I want connection allow/deny lists, so that I can limit capture to the MySQL connections I care about.
+7. As an engineer, I want table allow/deny lists, so that I can exclude tables irrelevant to indexing.
+8. As an engineer, I want db-hound's own queries always excluded, so that the package never analyzes itself.
+9. As an engineer, I want capture to work in HTTP (FPM), Octane, queue workers and Artisan commands alike, so that slow background jobs are covered, not just web requests.
+
+### Capture performance & safety
+10. As an SRE, I want queries aggregated in memory and sent to Redis in pipelined batches of 50, so that a sampled request with hundreds of queries only pays a few milliseconds.
+11. As an SRE, I want any remaining batch pushed at process shutdown, so that short-lived processes don't lose their tail of queries.
+12. As an SRE, I want capture to fail open with a hard Redis timeout, so that a Redis outage never breaks or blocks a request.
+13. As an SRE, I want capture failures logged at most once per minute, so that an outage doesn't flood the logs.
+14. As an engineer, I want queries that differ only in literal values or `IN` list length to share one Fingerprint, so that impact is not fragmented across near-identical entries.
+
+### Samples & sensitive data
+15. As a security-conscious engineer, I want Samples encrypted at rest with the app key, so that production values in Redis and the database are protected.
+16. As a security-conscious engineer, I want only one Sample per Fingerprint with a 7-day TTL, so that sensitive values don't accumulate.
+17. As a security-conscious engineer, I want a switch to never store real bindings, so that teams with strict policies can still use the package with placeholder-based `EXPLAIN`.
+18. As a security-conscious engineer, I want the Report to never contain bindings or raw `EXPLAIN` literals, so that it is safe to copy to a laptop.
+
+### Flushing & retention
+19. As an SRE, I want a scheduled `db-hound:flush` that moves Redis aggregates into a database table when a size threshold is exceeded, so that Redis memory stays bounded.
+20. As an SRE, I want the flush to also trigger when the oldest buffered data exceeds an age threshold, so that quiet apps don't lose data to Redis eviction.
+21. As an engineer, I want the flush to snapshot data atomically, so that increments arriving during a flush are never lost.
+22. As an engineer, I want a scheduled daily `db-hound:prune` that deletes Fingerprints not seen for 30 days (configurable), so that removed code paths disappear from Reports.
+23. As an engineer without Redis, I want a file Store driver, so that I can use db-hound on a single-server app.
+
+### Analysis
+24. As an engineer, I want `db-hound:analyze` to consider only Fingerprints above count and latency thresholds, so that analysis focuses on queries that matter.
+25. As an engineer, I want framework/system tables (migrations, jobs, sessions, cache, telescope, db-hound's own) ignored, so that the Report isn't noise.
+26. As an engineer, I want tables below ~1,000 rows skipped, so that I don't get Suggestions MySQL would ignore anyway.
+27. As an engineer, I want at most the top 200 Fingerprints by impact explained per run, so that analysis load on the database is bounded.
+28. As an engineer, I want `EXPLAIN` to run on a configurable connection mapped per captured connection, so that I can point analysis at a read replica.
+29. As an SRE, I want `EXPLAIN` restricted to `SELECT`, run in a read-only transaction with `max_execution_time`, and never `EXPLAIN ANALYZE`, so that analysis can't modify data or run away.
+30. As an engineer, I want `UPDATE`/`DELETE` Fingerprints rewritten to equivalent `SELECT … WHERE` for `EXPLAIN`, so that slow writes caused by unindexed predicates are found too.
+31. As an engineer, I want full scans, unused-index plans with high examined rows, filesorts and temporary tables flagged, so that the main missing-index symptoms are detected.
+32. As an engineer, I want predicate columns extracted from WHERE, JOIN ON, ORDER BY and GROUP BY with aliases resolved, so that Suggestions target the right table and columns.
+33. As an engineer, I want suggested composite indexes ordered equality → range → sort, so that the index is actually usable by the optimizer.
+33a. As an engineer, I want a note when a suggested index still leaves a filesort, naming the equality → sort → range alternative, so that I can choose based on what I know about the data.
+34. As an engineer, I want Suggestions on the same table consolidated when one is a left prefix of another, so that I add one index instead of several overlapping ones.
+35. As an engineer, I want Suggestions dropped when an existing index already covers them as a left prefix, so that I don't duplicate indexes.
+36. As an engineer, I want a Suggestion to extend an existing index when that is better than adding a new one, so that index count on hot tables stays low.
+37. As an engineer, I want Suggestions ranked by `count × avg_ms`, so that I fix the most impactful problem first.
+38. As an engineer, I want queries the parser can't handle listed in an "unparsed" section, so that nothing is silently dropped.
+
+### Report & handoff
+39. As an engineer, I want the Report written to local storage as a timestamped file plus `latest.md`, so that I know which file to SCP.
+40. As a local coding agent, I want each Suggestion to include the table's row count, existing indexes, relevant column types, a short `EXPLAIN` summary, impact stats and example Fingerprints, so that I can write a correct migration without production access.
+41. As a local coding agent, I want a Report header with run time, connection, capture coverage and thresholds used, so that I can explain the context to the engineer.
+42. As an engineer, I want the Report to be readable Markdown with a fixed structure, so that both I and the agent can use it directly.
+
+### Dump
+43. As an engineer, I want `db-hound:dump` to write a JSONL file with every qualifying Fingerprint, its decrypted Sample, raw `EXPLAIN` JSON, schema context and impact stats, so that a local agent can do deeper analysis.
+44. As a security-conscious engineer, I want the Dump always written with `0600` permissions, a `-SENSITIVE` filename suffix and a printed warning, so that nobody mistakes it for a shareable file.
+
+### Quality
+45. As a maintainer, I want the package tested against real MySQL 8.0 and 8.4 plus Redis, so that `EXPLAIN` and `information_schema` behavior is verified, not mocked away.
+46. As a maintainer, I want CI to run unit tests across PHP 8.4 × Laravel 11/12/13, so that supported versions stay green.
+
+## Implementation Decisions
+
+- **Engine:** MySQL 8+ only. All engine-specific behavior (`EXPLAIN` execution and interpretation, index/column/row-count inspection) lives behind a `Driver` interface so Postgres can be added later. MariaDB is best-effort.
+- **Modules:**
+  - **Fingerprinter** — fast tokenizer on the hot path: strips literals and comments, collapses `IN (?, ?, …)` to a single marker, normalizes whitespace, hashes. No AST.
+  - **Recorder** — listens to Laravel's query-executed event; decides sampling once per request/job; applies thresholds and allow/deny lists; excludes db-hound's own tables; aggregates per Fingerprint in memory (count, total ms, max ms, first/last seen, connection, one Sample).
+  - **Store** (interface) — `push(batch)`, atomic `snapshot()`, size/age introspection. Drivers: Redis (primary), file (fallback, JSONL appended per process, rotated on flush). Store writes from the hot path must fail open.
+  - **Repository for `db_hound_queries`** — persisted aggregates: fingerprint hash, normalized SQL, encrypted Sample, count, total/max ms, first/last seen, connection. Upsert merges counts. This is the only package table in v1 (no suggestions table).
+  - **Driver (MySQL)** — `explain(sql, bindings)` returning a normalized plan; schema inspection (existing indexes from `information_schema.STATISTICS`, row counts from `information_schema.TABLES`, column types).
+  - **Column extractor** — uses `phpmyadmin/sql-parser` to extract per-table predicate columns, classifying equality vs range vs sort/group; resolves aliases, joins, subqueries/`EXISTS`. Unparseable queries are surfaced, not dropped.
+  - **Analyzer** — qualifies Fingerprints, runs `EXPLAIN` via the Driver, detects symptoms, builds composite candidates (ERS order), consolidates across Fingerprints, dedupes against existing indexes, prefers extending an existing index, ranks by impact. Pure given its inputs (records + Driver).
+  - **Report renderer** — Suggestions + context → Markdown with a fixed structure.
+  - **Dump writer** — JSONL, one Fingerprint per line.
+- **Capture flow:** aggregate in memory per process → when the batch reaches 50 queries, one pipelined Redis write → remainder pushed at shutdown (shutdown function / destructor). No reliance on request/job lifecycle events. Redis connection has a ~50 ms timeout; errors drop the batch and log at most once per minute.
+- **Samples:** encrypted with Laravel's encrypter (app key), one per Fingerprint (first-write-wins until TTL), 7-day TTL. `store_bindings=false` stores no values; `EXPLAIN` then uses type-appropriate placeholders. Decrypted only in memory for `EXPLAIN`, and in the Dump.
+- **Flush:** scheduled every minute; acts when buffered Fingerprint count or size exceeds a threshold (e.g. 5,000 / 10 MB) OR the oldest buffered data exceeds an age threshold (e.g. 6h). Redis data is snapshotted with `RENAME` before reading so concurrent increments are never lost.
+- **Prune:** scheduled daily; deletes rows with `last_seen` older than `prune_after_days` (default 30). Analysis has no separate time window — retention defines it.
+- **Analysis connection:** config maps each captured connection to an analysis connection (e.g. `mysql → mysql_replica`); defaults to the same connection. Guards: plain `EXPLAIN FORMAT=JSON` only, `SELECT` only (writes rewritten), read-only transaction, session `max_execution_time`.
+- **Qualification defaults (all configurable):** count ≥ 10 AND (avg ≥ 50 ms OR max ≥ 500 ms); ignore tables `migrations`, `jobs`, `failed_jobs`, `sessions`, `cache`, `telescope_*`, db-hound's own; ignore `information_schema`/`SHOW`/`SET` queries; top 200 by impact; skip tables under 1,000 rows.
+- **Symptoms flagged:** `access_type = ALL`; `key` NULL with high examined rows; "Using filesort"; "Using temporary".
+- **Column ordering:** equality → range → sort. When a range column means the index can't satisfy ORDER BY, the Suggestion includes an alternative note ("filesort remains; consider equality → sort → range if the range matches most rows"), leaving the call to the engineer and agent, since db-hound can't reliably know range selectivity.
+- **Suggestion scope:** composite indexes (equality → range → sort), consolidation across Fingerprints (left-prefix containment), dedupe against existing indexes, extend-existing-index proposals.
+- **Ranking:** impact = `count × avg_ms`.
+- **Report:** written to the local storage disk under a db-hound directory as `report-{timestamp}.md` and `latest.md`. Header: run time, connection(s), capture coverage (first/last seen range), thresholds. Per Suggestion: table, row count, proposed columns in order, proposed index name, new vs extend, reason(s), `EXPLAIN` summary (`type`, `key`, `rows`, extras), existing indexes on the table, column types of involved columns, count/avg/max/impact, 1–3 example Fingerprints. Plus an "unparsed" section. Never contains bindings or raw `attached_condition` text.
+- **Dump:** JSONL; always includes decrypted Sample SQL and raw `EXPLAIN` JSON (which can contain literals); always `0600`, `-SENSITIVE` suffix, warning printed.
+- **Commands:** `db-hound:flush`, `db-hound:prune`, `db-hound:analyze`, `db-hound:dump`. The package registers flush/prune on the scheduler (overridable).
+- **Never runs DDL.** Migrations are written by the local agent and shipped through the team's normal process.
+
+## Testing Decisions
+
+- Good tests assert external behavior at the highest seam that is practical: what a command writes, what a Store holds, what Suggestions come out for given inputs. They do not assert internal method calls or intermediate data structures.
+- **Seams (highest first):**
+  1. **Commands end-to-end (integration):** seed a MySQL table above the row threshold with a known missing index, execute queries through `DB` with capture enabled, run `flush` → `analyze`, assert the Report suggests exactly the expected index (and nothing for already-indexed queries).
+  2. **Capture → Store (integration):** execute real queries, assert Store aggregates (counts, Fingerprints, Sample encrypted, exclusions). One shared Store contract suite runs against Redis and file drivers.
+  3. **Analyzer (unit):** fake Driver fed by recorded `EXPLAIN` JSON and schema fixtures captured from real MySQL; assert Suggestions (ordering, consolidation, dedupe, extend-existing, ranking, unparsed).
+  4. **Fingerprinter and Report renderer (unit):** pure input → output.
+- **Infrastructure:** Docker Compose with MySQL 8.0, MySQL 8.4 and Redis for local runs; same as GitHub Actions services. Integration tests live in a Pest `integration` group.
+- **CI matrix:** unit tests on PHP 8.4 × Laravel 11/12/13; integration tests on one Laravel version × MySQL 8.0/8.4.
+- **Prior art:** only the Spatie skeleton exists (Testbench `TestCase`, Pest, arch test against debug functions). The default SQLite testing connection is insufficient for integration tests and will be replaced/augmented with a MySQL connection.
+
+## Out of Scope
+
+- Postgres, SQLite or other engines (Driver interface only).
+- Covering-index Suggestions.
+- Redundant/unused existing-index warnings (needs `performance_schema`).
+- Per-table write-profile / write-heavy warnings.
+- Suggestions table, dismiss/applied state, web dashboard, Pulse card, Slack notifications.
+- Running DDL or generating migrations from the package itself.
+- Automated transfer of the Report off the production host (engineer uses SCP).
+- `EXPLAIN ANALYZE`.
+
+## Further Notes
+
+- Production deployments that are containerized may need `kubectl cp` or equivalent instead of SCP; the Report path should be stable and documented.
+- `phpmyadmin/sql-parser` is the only new runtime dependency besides Redis (via Laravel's Redis facade).
+- With retention at 30 days, a Report reflects up to 30 days of traffic; lower `prune_after_days` for fresher Reports.
