@@ -260,6 +260,14 @@ return [
     | `db-hound:analyze` writes `report-{timestamp}.md` and `latest.md` into
     | `directory` on the given filesystem disk.
     |
+    | `db-hound:dump` writes `dump-{timestamp}-SENSITIVE.jsonl` into the same
+    | directory: one JSON line per Fingerprint `analyze` would explain, with
+    | its decrypted Sample, raw EXPLAIN output, schema context and impact
+    | stats. It holds production data, so it is created owner-only (0600),
+    | only on a disk local to this host and never on one served publicly
+    | (with a `url` or `public` visibility, like Laravel's `public` disk);
+    | delete it once you are done.
+    |
     */
 
     'report' => [

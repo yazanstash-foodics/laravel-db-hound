@@ -42,6 +42,11 @@ function fakeDriver(array $plans, array $indexes = [], int $rows = 5000): Driver
     {
         public function __construct(private array $plans, private array $indexes, private int $rows) {}
 
+        public function explainRaw(string $sql, array $bindings): string
+        {
+            throw new LogicException('The Analyzer reads plans, never raw EXPLAIN output.');
+        }
+
         public function explain(string $sql, array $bindings): Plan
         {
             return $this->plans[$sql];
@@ -185,6 +190,11 @@ it('lists a Fingerprint whose EXPLAIN fails as unparsed without the binding valu
     {
         public function __construct(private Driver $inner) {}
 
+        public function explainRaw(string $sql, array $bindings): string
+        {
+            throw new LogicException('The Analyzer reads plans, never raw EXPLAIN output.');
+        }
+
         public function explain(string $sql, array $bindings): Plan
         {
             if (str_contains($sql, '`gone`')) {
@@ -232,6 +242,11 @@ it('lists a Fingerprint whose schema inspection fails as unparsed and still anal
     $driver = new class($failing) implements Driver
     {
         public function __construct(private string $failing) {}
+
+        public function explainRaw(string $sql, array $bindings): string
+        {
+            throw new LogicException('The Analyzer reads plans, never raw EXPLAIN output.');
+        }
 
         public function explain(string $sql, array $bindings): Plan
         {
@@ -297,6 +312,11 @@ function recordingDriver(): Driver
     {
         /** @var list<array{sql: string, bindings: array<int|string, mixed>}> */
         public array $explained = [];
+
+        public function explainRaw(string $sql, array $bindings): string
+        {
+            throw new LogicException('The Analyzer reads plans, never raw EXPLAIN output.');
+        }
 
         public function explain(string $sql, array $bindings): Plan
         {
@@ -461,6 +481,11 @@ function typedDriver(): Driver
     {
         /** @var list<array{sql: string, bindings: array<int|string, mixed>}> */
         public array $explained = [];
+
+        public function explainRaw(string $sql, array $bindings): string
+        {
+            throw new LogicException('The Analyzer reads plans, never raw EXPLAIN output.');
+        }
 
         public function explain(string $sql, array $bindings): Plan
         {

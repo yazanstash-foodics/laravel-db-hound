@@ -42,6 +42,11 @@ function schemaDriver(array $plans, array $indexes = []): Driver
 
         public function __construct(private array $plans, private array $indexes) {}
 
+        public function explainRaw(string $sql, array $bindings): string
+        {
+            throw new LogicException('The Analyzer reads plans, never raw EXPLAIN output.');
+        }
+
         public function explain(string $sql, array $bindings): Plan
         {
             return $this->plans[$sql];

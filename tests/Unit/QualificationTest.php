@@ -25,6 +25,11 @@ function scanningDriver(array $rowCounts = [], int $rows = 5000): Driver
 
         public function __construct(private array $rowCounts, private int $rows) {}
 
+        public function explainRaw(string $sql, array $bindings): string
+        {
+            throw new LogicException('The Analyzer reads plans, never raw EXPLAIN output.');
+        }
+
         public function explain(string $sql, array $bindings): Plan
         {
             $this->explained[] = $sql;

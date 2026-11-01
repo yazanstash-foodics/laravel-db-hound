@@ -16,6 +16,14 @@ interface Driver
     public function explain(string $sql, array $bindings): Plan;
 
     /**
+     * The engine's own EXPLAIN output for the statement, unmodified, under
+     * the same guards as `explain()`. It may contain the binding values.
+     *
+     * @param  array<int|string, mixed>  $bindings
+     */
+    public function explainRaw(string $sql, array $bindings): string;
+
+    /**
      * @return list<Index>
      */
     public function indexes(string $table): array;

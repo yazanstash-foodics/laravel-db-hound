@@ -21,6 +21,11 @@ function ordersDriver(array $indexes = []): Driver
     {
         public function __construct(private array $indexes) {}
 
+        public function explainRaw(string $sql, array $bindings): string
+        {
+            throw new LogicException('The Analyzer reads plans, never raw EXPLAIN output.');
+        }
+
         public function explain(string $sql, array $bindings): Plan
         {
             return new Plan([new TableAccess('orders', 'ALL', null, 5000)], usingFilesort: str_contains($sql, 'order by'));

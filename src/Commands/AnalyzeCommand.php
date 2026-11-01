@@ -4,13 +4,12 @@ namespace Foodics\DbHound\Commands;
 
 use Foodics\DbHound\Analysis\Analyzer;
 use Foodics\DbHound\Capture\QueryAggregate;
-use Foodics\DbHound\Drivers\MySqlDriver;
+use Foodics\DbHound\Drivers\AnalysisDrivers;
 use Foodics\DbHound\Persistence\QueryRepository;
 use Foodics\DbHound\Report\ReportContext;
 use Foodics\DbHound\Report\ReportRenderer;
 use Illuminate\Console\Command;
 use Illuminate\Contracts\Filesystem\Factory as Filesystems;
-use Illuminate\Database\DatabaseManager;
 use Illuminate\Support\Carbon;
 
 class AnalyzeCommand extends Command
@@ -25,28 +24,25 @@ class AnalyzeCommand extends Command
         QueryRepository $repository,
         Analyzer $analyzer,
         ReportRenderer $renderer,
-        DatabaseManager $databases,
+        AnalysisDrivers $drivers,
         Filesystems $filesystems,
     ): int {
-        return $this->withoutCapture(fn () => $this->analyze($repository, $analyzer, $renderer, $databases, $filesystems));
+        return $this->withoutCapture(fn () => $this->analyze($repository, $analyzer, $renderer, $drivers, $filesystems));
     }
 
     private function analyze(
         QueryRepository $repository,
         Analyzer $analyzer,
         ReportRenderer $renderer,
-        DatabaseManager $databases,
+        AnalysisDrivers $drivers,
         Filesystems $filesystems,
     ): int {
         $queries = $repository->all();
 
-        $result = $analyzer->analyze($queries, fn (string $connection) => new MySqlDriver(
-            $databases->connection($this->analysisConnection($connection)),
-            (int) config('db-hound.analysis.max_execution_time_ms', 5000),
-        ));
+        $result = $analyzer->analyze($queries, $drivers->driverFor(...));
 
         $now = Carbon::now();
-        $report = $renderer->render($this->reportContext($now, $queries, $analyzer->qualification->describe()), $result);
+        $report = $renderer->render($this->reportContext($now, $queries, $analyzer->qualification->describe(), $drivers), $result);
 
         $disk = $filesystems->disk((string) config('db-hound.report.disk', 'local'));
         $directory = trim((string) config('db-hound.report.directory', 'db-hound'), '/');
@@ -61,22 +57,10 @@ class AnalyzeCommand extends Command
     }
 
     /**
-     * The connection a captured connection's Fingerprints are explained and
-     * its schema inspected on: its `db-hound.analysis.connections` mapping
-     * (a read replica, say), or itself.
-     */
-    private function analysisConnection(string $connection): string
-    {
-        $mapped = ((array) config('db-hound.analysis.connections', []))[$connection] ?? null;
-
-        return is_string($mapped) && $mapped !== '' ? $mapped : $connection;
-    }
-
-    /**
      * @param  list<QueryAggregate>  $queries
      * @param  array<string, string>  $thresholds
      */
-    private function reportContext(Carbon $now, array $queries, array $thresholds): ReportContext
+    private function reportContext(Carbon $now, array $queries, array $thresholds, AnalysisDrivers $drivers): ReportContext
     {
         $first = $queries === [] ? null : min(array_map(fn (QueryAggregate $q) => $q->firstSeen, $queries));
         $last = $queries === [] ? null : max(array_map(fn (QueryAggregate $q) => $q->lastSeen, $queries));
@@ -84,9 +68,9 @@ class AnalyzeCommand extends Command
         return new ReportContext(
             generatedAt: $now,
             connections: array_map(
-                fn (string $connection) => $this->analysisConnection($connection) === $connection
+                fn (string $connection) => $drivers->connectionFor($connection) === $connection
                     ? $connection
-                    : $connection.' (analyzed on '.$this->analysisConnection($connection).')',
+                    : $connection.' (analyzed on '.$drivers->connectionFor($connection).')',
                 array_values(array_unique(array_map(fn (QueryAggregate $q) => $q->connection, $queries))),
             ),
             firstSeen: $first === null ? null : Carbon::createFromTimestamp($first, date_default_timezone_get()),

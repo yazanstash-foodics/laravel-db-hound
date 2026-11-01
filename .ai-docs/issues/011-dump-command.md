@@ -2,7 +2,7 @@
 title: db-hound:dump — sensitive JSONL with decrypted Samples and raw EXPLAIN
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: done
 ---
 
 ## Parent
@@ -15,11 +15,11 @@ status: open
 
 ## Acceptance criteria
 
-- [ ] Each line is valid JSON with all listed fields.
-- [ ] Sample SQL is decrypted; raw EXPLAIN is unmodified.
-- [ ] File permissions are `0600` and the name ends with `-SENSITIVE.jsonl`.
-- [ ] A warning is printed on every run.
-- [ ] Uses the same qualification rules and analysis connection guards as `analyze`.
+- [x] Each line is valid JSON with all listed fields.
+- [x] Sample SQL is decrypted; raw EXPLAIN is unmodified.
+- [x] File permissions are `0600` and the name ends with `-SENSITIVE.jsonl`.
+- [x] A warning is printed on every run.
+- [x] Uses the same qualification rules and analysis connection guards as `analyze`.
 
 ## Blocked by
 

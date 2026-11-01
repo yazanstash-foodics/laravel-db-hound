@@ -62,20 +62,16 @@ final class Analyzer
             }
 
             $sample = $query->sample === null ? null : Sample::decrypt($this->encrypter, $query->sample);
-            $explainable = $sample === null ? null : ExplainableQuery::from($sample->sql, $sample->bindings);
 
-            // Without a usable Sample, the Fingerprint itself is explained.
             try {
-                [$sql, $bindings] = $explainable === null
-                    ? [$shape->sql, $this->placeholders->for($shape->sql, $driver)]
-                    : [$explainable->sql, $explainable->bindings];
+                $statement = ExplainStatement::for($shape, $sample, $driver, $this->placeholders);
             } catch (Throwable $e) {
-                $unparsed[] = new UnparsedQuery($query->connection, $query->sql, $this->failure('inspecting its tables', $e));
+                $unparsed[] = new UnparsedQuery($query->connection, $query->sql, self::failure('inspecting its tables', $e));
 
                 continue;
             }
 
-            if ($bindings === null) {
+            if ($statement === null) {
                 $unparsed[] = new UnparsedQuery($query->connection, $query->sql, self::REASON_NEEDS_SAMPLE);
 
                 continue;
@@ -84,9 +80,9 @@ final class Analyzer
             $explained++;
 
             try {
-                $plan = $driver->explain($sql, $bindings);
+                $plan = $driver->explain($statement->sql, $statement->bindings);
             } catch (Throwable $e) {
-                $unparsed[] = new UnparsedQuery($query->connection, $query->sql, $this->failure('EXPLAIN', $e));
+                $unparsed[] = new UnparsedQuery($query->connection, $query->sql, self::failure('EXPLAIN', $e));
 
                 continue;
             }
@@ -119,7 +115,7 @@ final class Analyzer
                     )];
                 }
             } catch (Throwable $e) {
-                $unparsed[] = new UnparsedQuery($query->connection, $query->sql, $this->failure('inspecting its tables', $e));
+                $unparsed[] = new UnparsedQuery($query->connection, $query->sql, self::failure('inspecting its tables', $e));
 
                 continue;
             }
@@ -363,7 +359,7 @@ final class Analyzer
      * Describe a failed step by its error code only: driver messages (and
      * QueryException in particular) embed the decrypted binding values.
      */
-    private function failure(string $step, Throwable $e): string
+    public static function failure(string $step, Throwable $e): string
     {
         // QueryException is a PDOException carrying the driver's errorInfo.
         $code = $e instanceof PDOException ? ($e->errorInfo[0] ?? $e->getCode()) : $e->getCode();

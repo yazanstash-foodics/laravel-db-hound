@@ -8,9 +8,12 @@ use Foodics\DbHound\Capture\CapturePolicy;
 use Foodics\DbHound\Capture\Fingerprinter;
 use Foodics\DbHound\Capture\Recorder;
 use Foodics\DbHound\Commands\AnalyzeCommand;
+use Foodics\DbHound\Commands\DumpCommand;
 use Foodics\DbHound\Commands\FlushCommand;
 use Foodics\DbHound\Commands\PruneCommand;
 use Foodics\DbHound\Contracts\Store;
+use Foodics\DbHound\Drivers\AnalysisDrivers;
+use Foodics\DbHound\Dump\DumpWriter;
 use Foodics\DbHound\Persistence\QueryRepository;
 use Foodics\DbHound\Stores\FileStore;
 use Foodics\DbHound\Stores\RedisStore;
@@ -39,6 +42,7 @@ class DbHoundServiceProvider extends PackageServiceProvider
                 FlushCommand::class,
                 AnalyzeCommand::class,
                 PruneCommand::class,
+                DumpCommand::class,
             ]);
     }
 
@@ -71,6 +75,17 @@ class DbHoundServiceProvider extends PackageServiceProvider
                     (array) $app->make('config')->get('database.connections', []),
                 ),
             ),
+        ));
+
+        $this->app->bind(AnalysisDrivers::class, fn (Application $app) => new AnalysisDrivers(
+            $app->make('db'),
+            (array) $app->make('config')->get('db-hound.analysis.connections', []),
+            (int) $app->make('config')->get('db-hound.analysis.max_execution_time_ms', 5000),
+        ));
+
+        $this->app->bind(DumpWriter::class, fn (Application $app) => new DumpWriter(
+            $app->make('encrypter'),
+            qualification: $app->make(Analyzer::class)->qualification,
         ));
 
         $this->app->bind(QueryRepository::class, fn (Application $app) => new QueryRepository(

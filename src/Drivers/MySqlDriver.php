@@ -48,6 +48,15 @@ final class MySqlDriver implements Driver
      */
     public function explain(string $sql, array $bindings): Plan
     {
+        return self::planFromJson($this->explainRaw($sql, $bindings));
+    }
+
+    /**
+     * The `EXPLAIN FORMAT=JSON` output (JSON format version 1) `explain()`
+     * summarizes, as the server returned it.
+     */
+    public function explainRaw(string $sql, array $bindings): string
+    {
         if (! ExplainableQuery::isSelect($sql)) {
             throw new InvalidArgumentException('db-hound only EXPLAINs SELECT statements.');
         }
@@ -57,7 +66,7 @@ final class MySqlDriver implements Driver
             fn () => $this->firstRow($session, 'EXPLAIN FORMAT=JSON '.$sql, $bindings),
         )));
 
-        return self::planFromJson((string) reset($row));
+        return (string) reset($row);
     }
 
     /**
