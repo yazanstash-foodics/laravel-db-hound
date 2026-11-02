@@ -2,9 +2,9 @@
 
 namespace Foodics\DbHound\Tests;
 
+use Foodics\DbHound\DbHoundServiceProvider;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Orchestra\Testbench\TestCase as Orchestra;
-use Foodics\DbHound\DbHoundServiceProvider;
 
 class TestCase extends Orchestra
 {

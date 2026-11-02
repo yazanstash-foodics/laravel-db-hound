@@ -1,0 +1,37 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "553.05"
+    },
+    "ordering_operation": {
+      "using_filesort": true,
+      "cost_info": {
+        "sort_cost": "49.80"
+      },
+      "table": {
+        "table_name": "orders",
+        "access_type": "ALL",
+        "rows_examined_per_scan": 4980,
+        "rows_produced_per_join": 49,
+        "filtered": "1.00",
+        "cost_info": {
+          "read_cost": "498.27",
+          "eval_cost": "4.98",
+          "prefix_cost": "503.25",
+          "data_read_per_join": "5K"
+        },
+        "used_columns": [
+          "id",
+          "branch_id",
+          "customer_id",
+          "status",
+          "total",
+          "created_at",
+          "deleted_at"
+        ],
+        "attached_condition": "((`db_hound_fixtures`.`orders`.`branch_id` = 7) and (`db_hound_fixtures`.`orders`.`status` = 'paid'))"
+      }
+    }
+  }
+}

@@ -2,7 +2,7 @@
 title: Fingerprint qualification, ignore lists, small-table skip, impact ranking
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: done
 ---
 
 ## Parent
@@ -15,11 +15,11 @@ status: open
 
 ## Acceptance criteria
 
-- [ ] Fingerprints below count or latency thresholds are not explained (assert via fake Driver call log or Report absence).
-- [ ] Ignored tables and statement types never appear in the Report.
-- [ ] With 300 qualifying Fingerprints and cap 200, exactly 200 are explained — the highest-impact ones.
-- [ ] A table under the row threshold yields no Suggestion even with a full scan.
-- [ ] Report Suggestions are sorted by impact descending; header shows thresholds.
+- [x] Fingerprints below count or latency thresholds are not explained (assert via fake Driver call log or Report absence).
+- [x] Ignored tables and statement types never appear in the Report.
+- [x] With 300 qualifying Fingerprints and cap 200, exactly 200 are explained — the highest-impact ones.
+- [x] A table under the row threshold yields no Suggestion even with a full scan.
+- [x] Report Suggestions are sorted by impact descending; header shows thresholds.
 
 ## Blocked by
 

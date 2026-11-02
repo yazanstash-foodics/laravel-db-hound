@@ -2,7 +2,7 @@
 title: Test infrastructure — Docker MySQL/Redis, Unit/Integration suites, CI
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: pending-ci
 ---
 
 ## Parent
@@ -19,7 +19,9 @@ Enabling slice for every later issue. Docker Compose provides MySQL 8.0, MySQL 8
 - [x] `composer test:unit` runs without Docker.
 - [x] `composer test:integration` runs against MySQL 8.0; `composer test:integration:84` against MySQL 8.4.
 - [x] Integration smoke test passes on both MySQL versions.
-- [ ] CI: unit job (PHP 8.4/8.5 × Laravel 11/12/13) and integration job (MySQL 8.0/8.4 + Redis) both green.
+- [ ] CI: unit job (PHP 8.4/8.5, Laravel 13) and integration job (MySQL 8.0/8.4 + Redis via phpredis) both green.
+
+> **Pending CI:** the last criterion stays unchecked until `.github/workflows/run-tests.yml` runs green on the remote. Everything else is verified locally.
 
 ## Blocked by
 

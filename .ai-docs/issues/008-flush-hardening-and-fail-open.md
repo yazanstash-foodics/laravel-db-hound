@@ -2,7 +2,7 @@
 title: Flush hardening (atomic snapshot, size OR age, scheduler) and fail-open capture
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: done
 ---
 
 ## Parent
@@ -15,11 +15,11 @@ status: open
 
 ## Acceptance criteria
 
-- [ ] Flush is a no-op below both thresholds; flushes when either is exceeded; `--force` always flushes.
-- [ ] Integration: increments pushed while a flush is in progress are present after the next flush (no loss).
-- [ ] Repeated flushes of the same Fingerprint merge correctly (count sums, max is max, first/last seen correct).
-- [ ] With Redis unavailable, queries execute normally, no exception reaches the app, and only one log entry is written per minute.
-- [ ] Flush is registered on the scheduler every minute.
+- [x] Flush is a no-op below both thresholds; flushes when either is exceeded; `--force` always flushes.
+- [x] Integration: increments pushed while a flush is in progress are present after the next flush (no loss).
+- [x] Repeated flushes of the same Fingerprint merge correctly (count sums, max is max, first/last seen correct).
+- [x] With Redis unavailable, queries execute normally, no exception reaches the app, and only one log entry is written per minute.
+- [x] Flush is registered on the scheduler every minute.
 
 ## Blocked by
 

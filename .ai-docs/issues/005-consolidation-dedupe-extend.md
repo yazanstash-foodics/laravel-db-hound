@@ -2,7 +2,7 @@
 title: Consolidate Suggestions, dedupe against existing indexes, extend existing index
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: done
 ---
 
 ## Parent
@@ -15,11 +15,11 @@ After per-Fingerprint candidates are built, consolidate them per table: if one c
 
 ## Acceptance criteria
 
-- [ ] Unit: candidates `(a, b)` and `(a, b, c)` on one table → one Suggestion `(a, b, c)` serving both Fingerprints with summed impact.
-- [ ] Unit: candidate `(a)` with existing index `(a, b)` → no Suggestion.
-- [ ] Unit: candidate `(a, b)` with existing index `(a)` → "extend `idx_a` to `(a, b)`" Suggestion.
-- [ ] Unit: candidates `(a, b)` and `(b, a)` stay separate (no false consolidation).
-- [ ] Report marks each Suggestion as new vs extend and lists all served Fingerprints.
+- [x] Unit: candidates `(a, b)` and `(a, b, c)` on one table → one Suggestion `(a, b, c)` serving both Fingerprints with summed impact.
+- [x] Unit: candidate `(a)` with existing index `(a, b)` → no Suggestion.
+- [x] Unit: candidate `(a, b)` with existing index `(a)` → "extend `idx_a` to `(a, b)`" Suggestion.
+- [x] Unit: candidates `(a, b)` and `(b, a)` stay separate (no false consolidation).
+- [x] Report marks each Suggestion as new vs extend and lists all served Fingerprints.
 
 ## Blocked by
 

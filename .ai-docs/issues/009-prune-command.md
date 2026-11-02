@@ -2,7 +2,7 @@
 title: db-hound:prune — retention for db_hound_queries
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: done
 ---
 
 ## Parent
@@ -15,10 +15,10 @@ status: open
 
 ## Acceptance criteria
 
-- [ ] Rows older than the configured days are deleted; newer rows remain.
-- [ ] Deletion happens in bounded chunks.
-- [ ] Registered on the scheduler daily.
-- [ ] Command prints how many rows were pruned.
+- [x] Rows older than the configured days are deleted; newer rows remain.
+- [x] Deletion happens in bounded chunks.
+- [x] Registered on the scheduler daily.
+- [x] Command prints how many rows were pruned.
 
 ## Blocked by
 

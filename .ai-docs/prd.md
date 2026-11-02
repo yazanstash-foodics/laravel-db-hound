@@ -88,7 +88,7 @@ For deeper investigation, `php artisan db-hound:dump` writes a sensitive JSONL *
 
 ### Quality
 45. As a maintainer, I want the package tested against real MySQL 8.0 and 8.4 plus Redis, so that `EXPLAIN` and `information_schema` behavior is verified, not mocked away.
-46. As a maintainer, I want CI to run unit tests across PHP 8.4 × Laravel 11/12/13, so that supported versions stay green.
+46. As a maintainer, I want CI to run unit tests across PHP 8.4/8.5 on Laravel 13, so that supported versions stay green.
 
 ## Implementation Decisions
 
@@ -127,7 +127,7 @@ For deeper investigation, `php artisan db-hound:dump` writes a sensitive JSONL *
   3. **Analyzer (unit):** fake Driver fed by recorded `EXPLAIN` JSON and schema fixtures captured from real MySQL; assert Suggestions (ordering, consolidation, dedupe, extend-existing, ranking, unparsed).
   4. **Fingerprinter and Report renderer (unit):** pure input → output.
 - **Infrastructure:** Docker Compose with MySQL 8.0, MySQL 8.4 and Redis for local runs; same as GitHub Actions services. Integration tests live in a Pest `integration` group.
-- **CI matrix:** unit tests on PHP 8.4 × Laravel 11/12/13; integration tests on one Laravel version × MySQL 8.0/8.4.
+- **CI matrix:** latest dependencies only, Laravel 13, Ubuntu. Unit tests on PHP 8.4/8.5; integration tests on PHP 8.4 × MySQL 8.0/8.4 with phpredis.
 - **Prior art:** only the Spatie skeleton exists (Testbench `TestCase`, Pest, arch test against debug functions). The default SQLite testing connection is insufficient for integration tests and will be replaced/augmented with a MySQL connection.
 
 ## Out of Scope

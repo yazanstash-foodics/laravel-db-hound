@@ -2,7 +2,7 @@
 title: Tracer bullet — capture → Redis → flush → analyze → Report
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: done
 ---
 
 ## Parent
@@ -17,12 +17,12 @@ Introduce the `Store` and `Driver` interfaces here, with the Redis Store and MyS
 
 ## Acceptance criteria
 
-- [ ] `enabled` config flag (default `false`) gates all capture.
-- [ ] Integration test: seed a >1k-row table without an index on column X, run `SELECT … WHERE X = ?` repeatedly, run `flush` then `analyze`; `latest.md` contains one Suggestion for an index on `(X)` with reason "full scan".
-- [ ] Integration test: the same query on an indexed column produces no Suggestion.
-- [ ] Redis receives pipelined writes in batches of 50; the tail is pushed at process shutdown.
-- [ ] Report structure matches the PRD (header + all per-Suggestion fields) and contains no binding values.
-- [ ] `Store` and `Driver` are interfaces; Redis and MySQL are the implementations.
+- [x] `enabled` config flag (default `false`) gates all capture.
+- [x] Integration test: seed a >1k-row table without an index on column X, run `SELECT … WHERE X = ?` repeatedly, run `flush` then `analyze`; `latest.md` contains one Suggestion for an index on `(X)` with reason "full scan".
+- [x] Integration test: the same query on an indexed column produces no Suggestion.
+- [x] Redis receives pipelined writes in batches of 50; the tail is pushed at process shutdown.
+- [x] Report structure matches the PRD (header + all per-Suggestion fields) and contains no binding values.
+- [x] `Store` and `Driver` are interfaces; Redis and MySQL are the implementations.
 
 ## Blocked by
 

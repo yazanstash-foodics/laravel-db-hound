@@ -2,7 +2,7 @@
 title: Encrypted Samples with TTL, store_bindings switch, UPDATE/DELETE rewrite
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: done
 ---
 
 ## Parent
@@ -15,11 +15,11 @@ Each Fingerprint keeps one Sample (SQL + bindings) encrypted with the app key, f
 
 ## Acceptance criteria
 
-- [ ] Stored Samples are not readable without decryption (assert ciphertext in Redis and table).
-- [ ] Only one Sample per Fingerprint; it expires after the configured TTL and is replaced by the next capture.
-- [ ] With `store_bindings=false`, no binding values are persisted anywhere, and `analyze` still produces Suggestions.
-- [ ] Integration test: an `UPDATE … WHERE unindexed_col = ?` produces a Suggestion for `unindexed_col`.
-- [ ] Report never contains decrypted values.
+- [x] Stored Samples are not readable without decryption (assert ciphertext in Redis and table).
+- [x] Only one Sample per Fingerprint; it expires after the configured TTL and is replaced by the next capture.
+- [x] With `store_bindings=false`, no binding values are persisted anywhere, and `analyze` still produces Suggestions.
+- [x] Integration test: an `UPDATE … WHERE unindexed_col = ?` produces a Suggestion for `unindexed_col`.
+- [x] Report never contains decrypted values.
 
 ## Blocked by
 

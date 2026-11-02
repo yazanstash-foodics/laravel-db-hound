@@ -2,7 +2,7 @@
 title: File Store driver with shared Store contract tests
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: done
 ---
 
 ## Parent
@@ -15,10 +15,10 @@ A file-based `Store` driver for apps without Redis, selectable via config. Each 
 
 ## Acceptance criteria
 
-- [ ] `store` config switches between `redis` and `file`.
-- [ ] Shared contract suite (push, snapshot, size/age, no loss during flush, fail-open) passes for both drivers.
-- [ ] Concurrent writers (two processes) don't corrupt files.
-- [ ] End-to-end tracer test passes with the file driver.
+- [x] `store` config switches between `redis` and `file`.
+- [x] Shared contract suite (push, snapshot, size/age, no loss during flush, fail-open) passes for both drivers.
+- [x] Concurrent writers (two processes) don't corrupt files.
+- [x] End-to-end tracer test passes with the file driver.
 
 ## Blocked by
 

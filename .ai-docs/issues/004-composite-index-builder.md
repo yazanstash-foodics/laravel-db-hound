@@ -2,7 +2,7 @@
 title: Composite index Suggestions with SQL parser (ERS ordering)
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: done
 ---
 
 ## Parent
@@ -15,12 +15,12 @@ Replace the tracer's single-column extraction with `phpmyadmin/sql-parser`-based
 
 ## Acceptance criteria
 
-- [ ] Unit tests (fake Driver + recorded EXPLAIN fixtures): `WHERE a = ? AND b > ? ORDER BY c` → `(a, b)`; `WHERE a = ? AND b = ? ORDER BY c` → `(a, b, c)`.
-- [ ] When a range column prevents the index from satisfying ORDER BY (e.g. `(a, b)` above), the Suggestion carries an "alternative" note: "filesort remains; consider `(a, c, b)` if the range on `b` matches most rows." The Report renders this note. No note when the index fully covers the sort.
-- [ ] Aliased and joined queries attribute columns to the correct table.
-- [ ] `whereHas`-style `EXISTS` subqueries produce Suggestions on the inner table.
-- [ ] Filesort and temporary-table plans are flagged with the matching reason.
-- [ ] An unparseable query appears under "unparsed" in the Report and doesn't crash `analyze`.
+- [x] Unit tests (fake Driver + recorded EXPLAIN fixtures): `WHERE a = ? AND b > ? ORDER BY c` → `(a, b)`; `WHERE a = ? AND b = ? ORDER BY c` → `(a, b, c)`.
+- [x] When a range column prevents the index from satisfying ORDER BY (e.g. `(a, b)` above), the Suggestion carries an "alternative" note: "filesort remains; consider `(a, c, b)` if the range on `b` matches most rows." The Report renders this note. No note when the index fully covers the sort.
+- [x] Aliased and joined queries attribute columns to the correct table.
+- [x] `whereHas`-style `EXISTS` subqueries produce Suggestions on the inner table.
+- [x] Filesort and temporary-table plans are flagged with the matching reason.
+- [x] An unparseable query appears under "unparsed" in the Report and doesn't crash `analyze`.
 
 ## Blocked by
 
