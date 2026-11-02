@@ -153,39 +153,60 @@ final class Analyzer
     }
 
     /**
-     * Fold each Suggestion into one whose index also serves it (it is a
-     * left prefix of that one's columns, equality columns in any order; the
-     * longer one takes that order), so a table gets one index instead
-     * of several overlapping ones. A Suggestion several others contain goes
-     * to the one with the most impact.
+     * Fold each Suggestion into one whose index also serves it (its columns
+     * start that one's, equality columns in any order, weak filters in any
+     * order or left out; that one takes the order), so a table gets one
+     * index instead of several overlapping ones. A Suggestion several others
+     * serve goes to the one with the most impact.
      *
      * @param  list<Suggestion>  $suggestions
      * @return list<Suggestion>
      */
     private function consolidate(array $suggestions): array
     {
-        // Longest first: a chain of prefixes ends up in its longest member.
-        usort($suggestions, fn (Suggestion $a, Suggestion $b) => count($b->columns) <=> count($a->columns));
+        usort($suggestions, fn (Suggestion $a, Suggestion $b) => [$b->impact(), count($b->columns)] <=> [$a->impact(), count($a->columns)]);
 
         $kept = [];
 
         foreach ($suggestions as $suggestion) {
-            $into = null;
-
-            foreach ($kept as $longer) {
-                if ($longer->contains($suggestion) && ($into === null || $longer->impact() > $into->impact())) {
-                    $into = $longer;
-                }
-            }
-
-            if ($into === null) {
-                $kept[] = $suggestion;
-            } else {
-                $into->absorb($suggestion);
-            }
+            $kept = $this->fold($kept, $suggestion);
         }
 
         return $kept;
+    }
+
+    /**
+     * Fold `$suggestion` into the first of `$kept` (most impact first) whose
+     * index serves it, or that first one into `$suggestion` when only
+     * `$suggestion`'s index serves both. Only when neither does as both are
+     * (every column kept) does one leave out its weak filters to serve the
+     * other: first those of the one served, then those of the one serving.
+     * Else keep `$suggestion` apart.
+     *
+     * @param  list<Suggestion>  $kept
+     * @return list<Suggestion>
+     */
+    private function fold(array $kept, Suggestion $suggestion): array
+    {
+        foreach (Leeway::cases() as $leeway) {
+            foreach ($kept as $at => $into) {
+                if ($into->contains($suggestion, $leeway)) {
+                    $into->absorb($suggestion, $leeway);
+
+                    return $kept;
+                }
+
+                if ($suggestion->contains($into, $leeway)) {
+                    $suggestion->absorb($into, $leeway);
+                    unset($kept[$at]);
+
+                    // Grown, it may now fold into another one.
+                    return $this->fold(array_values($kept), $suggestion);
+                }
+            }
+        }
+
+        return [...$kept, $suggestion];
     }
 
     /**

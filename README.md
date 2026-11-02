@@ -340,8 +340,8 @@ select * from `orders` where `branch_id` = ? and `status` in (?) order by `creat
 
 Suggestions are already **consolidated** and **deduplicated**:
 
-- When one Suggestion's columns are a left prefix of another's on the same table, only the longer one is kept, and it serves both sets of Fingerprints.
-- A Suggestion already covered by an existing index (as a left prefix) is dropped.
+- When one Suggestion's index also serves another's on the same table, only one is kept, and it serves both sets of Fingerprints with their impact summed. An index serves a query when the query's columns are its left prefix, taking its equality columns in any order and its weak filters in any order or not at all (a query filters the rows the index returns on a weak filter the index leaves out). So `(a, b, c)` and `(b, a, c)` with `a` and `b` equality columns are one index, and `(merchant_id, deleted_at, created_at)` and `(merchant_id, is_contact_user, created_at)` become `(merchant_id, created_at)`. Equality columns before a range or sort are never left out: `(a = ?, b > ?)` and `(b = ?, a > ?)` stay apart. A Suggestion several others serve goes to the one with the most impact.
+- A Suggestion an existing index already serves, by the same rule, is dropped.
 - When an existing non-unique B-tree index is a strict left prefix of the proposed columns, the Suggestion extends it rather than adding another index.
 
 ### Unparsed queries

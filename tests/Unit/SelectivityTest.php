@@ -1,6 +1,5 @@
 <?php
 
-use Foodics\DbHound\Analysis\AnalysisResult;
 use Foodics\DbHound\Analysis\Analyzer;
 use Foodics\DbHound\Analysis\Index;
 use Foodics\DbHound\Analysis\Plan;
@@ -8,74 +7,6 @@ use Foodics\DbHound\Analysis\TableAccess;
 use Foodics\DbHound\Capture\QueryAggregate;
 use Foodics\DbHound\Contracts\Driver;
 use Illuminate\Encryption\Encrypter;
-
-/**
- * A Driver over tables shaped like those of the staging Report the ticket
- * cites, with per-column cardinality as MySQL index statistics would give it.
- *
- * @param  array<string, Plan>  $plans  SQL => plan
- * @param  array<string, array{rows: int, columns: array<string, string>, indexes?: list<Index>, cardinality?: array<string, int>}>  $tables
- */
-function cardinalityDriver(array $plans, array $tables): Driver
-{
-    return new class($plans, $tables) implements Driver
-    {
-        public function __construct(private array $plans, private array $tables) {}
-
-        public function explainRaw(string $sql, array $bindings): string
-        {
-            throw new LogicException('The Analyzer reads plans, never raw EXPLAIN output.');
-        }
-
-        public function explain(string $sql, array $bindings): Plan
-        {
-            return $this->plans[$sql];
-        }
-
-        public function indexes(string $table): array
-        {
-            return [new Index('PRIMARY', ['id'], true), ...$this->tables[$table]['indexes'] ?? []];
-        }
-
-        public function rowCount(string $table): int
-        {
-            return $this->tables[$table]['rows'] ?? 0;
-        }
-
-        public function columnTypes(string $table): array
-        {
-            return $this->tables[$table]['columns'] ?? [];
-        }
-
-        public function cardinality(string $table): array
-        {
-            return $this->tables[$table]['cardinality'] ?? [];
-        }
-    };
-}
-
-/**
- * @param  array<string, Plan>  $plans  SQL => plan
- * @param  array<string, array{rows: int, columns: array<string, string>, indexes?: list<Index>, cardinality?: array<string, int>}>  $tables
- */
-function analyzeWithCardinality(array $plans, array $tables, ?Analyzer $analyzer = null): AnalysisResult
-{
-    $queries = array_map(fn (string $sql) => new QueryAggregate(
-        connection: 'mysql',
-        hash: md5($sql),
-        sql: $sql,
-        sample: null,
-        count: 10,
-        totalMs: 1000.0,
-        maxMs: 200.0,
-        firstSeen: 1_700_000_000,
-        lastSeen: 1_700_000_500,
-    ), array_keys($plans));
-
-    $analyzer ??= new Analyzer(new Encrypter(str_repeat('k', 32), 'aes-256-cbc'), qualification: everyFingerprint());
-
-    return $analyzer->analyze($queries, cardinalityDriver($plans, $tables));
-}
 
 it('does not suggest an index on a soft-delete filter alone (staging #4)', function () {
     $sql = 'select count(*) as `aggregate` from `sama_finance` where `sama_finance`.`deleted_at` is null';
@@ -181,25 +112,6 @@ it('does not suggest an index on an IS NOT NULL filter alone (staging #1)', func
         ->and(array_map(fn ($unparsed) => $unparsed->reason, $result->unparsed))
         ->toContain('full scan on `bank_statements_summary`, but it has only low-selectivity predicates (`merchant_id`)');
 });
-
-/**
- * An `orders` table of 1,000,000 rows that every query full-scans.
- *
- * @param  array<string, int>  $cardinality
- * @return array<string, array{rows: int, columns: array<string, string>, cardinality: array<string, int>}>
- */
-function millionOrders(array $cardinality = []): array
-{
-    return ['orders' => [
-        'rows' => 1_000_000,
-        'columns' => [
-            'id' => 'bigint unsigned', 'branch_id' => 'bigint unsigned', 'customer_id' => 'bigint unsigned', 'reference' => 'char(36)',
-            'status' => 'varchar(20)', 'kind' => "enum('dine_in','pickup','delivery')", 'is_paid' => 'tinyint(1)',
-            'total' => 'decimal(10,2)', 'created_at' => 'timestamp', 'closed_at' => 'timestamp', 'deleted_at' => 'timestamp',
-        ],
-        'cardinality' => $cardinality,
-    ]];
-}
 
 it('orders equality columns by descending cardinality, whatever their order in the query', function (string $sql) {
     $result = analyzeWithCardinality(

@@ -166,25 +166,27 @@ final class Suggestion
     }
 
     /**
-     * Whether this Suggestion's index also serves `$other`'s: same table,
-     * and `$other`'s columns are a strict left prefix of this one's, in
-     * orders both allow.
+     * Whether this Suggestion's index also serves `$other`'s: another
+     * Suggestion on the same table whose columns start this one's, in
+     * orders both allow, leaving out the weak filters `$leeway` lets go.
      */
-    public function contains(self $other): bool
+    public function contains(self $other, Leeway $leeway = Leeway::Prefix): bool
     {
-        return $other->connection === $this->connection
+        return $other !== $this
+            && $other->connection === $this->connection
             && $other->table === $this->table
-            && count($other->columns) < count($this->columns)
-            && $this->order->startingWith($other->order) !== null;
+            && $this->order->startingWith($other->order, $leeway) !== null;
     }
 
     /**
      * Take over the Fingerprints, reasons and notes of a Suggestion this
-     * one's index also serves, putting its columns first.
+     * one's index also serves (`contains()`, with the same `$leeway`),
+     * putting its columns first.
      */
-    public function absorb(self $other): void
+    public function absorb(self $other, Leeway $leeway = Leeway::Prefix): void
     {
-        $this->narrow($other->order);
+        $this->order = $this->order->startingWith($other->order, $leeway) ?? $this->order;
+        $this->columns = $this->order->columns();
 
         $this->flag($other->reasons);
 

@@ -1,10 +1,17 @@
 <?php
 
+use Foodics\DbHound\Analysis\AnalysisResult;
+use Foodics\DbHound\Analysis\Analyzer;
+use Foodics\DbHound\Analysis\Index;
+use Foodics\DbHound\Analysis\Plan;
 use Foodics\DbHound\Analysis\Qualification;
+use Foodics\DbHound\Capture\QueryAggregate;
 use Foodics\DbHound\Capture\Recorder;
+use Foodics\DbHound\Contracts\Driver;
 use Foodics\DbHound\Contracts\Store;
 use Foodics\DbHound\Tests\IntegrationTestCase;
 use Foodics\DbHound\Tests\TestCase;
+use Illuminate\Encryption\Encrypter;
 use Illuminate\Support\Facades\Redis;
 
 uses(TestCase::class)->in('Unit');
@@ -113,4 +120,96 @@ function readmeSection(string $heading): string
     $end = strpos(readme(), "\n## ", (int) $start + 1);
 
     return substr(readme(), (int) $start, $end === false ? null : $end - (int) $start);
+}
+
+/**
+ * A Driver over tables shaped like those of the staging Report the ticket
+ * cites, with per-column cardinality as MySQL index statistics would give it.
+ *
+ * @param  array<string, Plan>  $plans  SQL => plan
+ * @param  array<string, array{rows: int, columns: array<string, string>, indexes?: list<Index>, cardinality?: array<string, int>}>  $tables
+ */
+function cardinalityDriver(array $plans, array $tables): Driver
+{
+    return new class($plans, $tables) implements Driver
+    {
+        public function __construct(private array $plans, private array $tables) {}
+
+        public function explainRaw(string $sql, array $bindings): string
+        {
+            throw new LogicException('The Analyzer reads plans, never raw EXPLAIN output.');
+        }
+
+        public function explain(string $sql, array $bindings): Plan
+        {
+            return $this->plans[$sql];
+        }
+
+        public function indexes(string $table): array
+        {
+            return [new Index('PRIMARY', ['id'], true), ...$this->tables[$table]['indexes'] ?? []];
+        }
+
+        public function rowCount(string $table): int
+        {
+            return $this->tables[$table]['rows'] ?? 0;
+        }
+
+        public function columnTypes(string $table): array
+        {
+            return $this->tables[$table]['columns'] ?? [];
+        }
+
+        public function cardinality(string $table): array
+        {
+            return $this->tables[$table]['cardinality'] ?? [];
+        }
+    };
+}
+
+/**
+ * Analyze each Fingerprint of `$plans` without a Sample, over the
+ * `$tables` of cardinalityDriver(). A Fingerprint has the count, total ms
+ * and max ms `$stats` gives it, else 10 runs of 100 ms on average.
+ *
+ * @param  array<string, Plan>  $plans  SQL => plan
+ * @param  array<string, array{rows: int, columns: array<string, string>, indexes?: list<Index>, cardinality?: array<string, int>}>  $tables
+ * @param  array<string, array{int, float, float}>  $stats  SQL => [count, total ms, max ms]
+ */
+function analyzeWithCardinality(array $plans, array $tables, ?Analyzer $analyzer = null, array $stats = []): AnalysisResult
+{
+    $queries = array_map(fn (string $sql) => new QueryAggregate(
+        connection: 'mysql',
+        hash: md5($sql),
+        sql: $sql,
+        sample: null,
+        count: $stats[$sql][0] ?? 10,
+        totalMs: $stats[$sql][1] ?? 1000.0,
+        maxMs: $stats[$sql][2] ?? 200.0,
+        firstSeen: 1_700_000_000,
+        lastSeen: 1_700_000_500,
+    ), array_keys($plans));
+
+    $analyzer ??= new Analyzer(new Encrypter(str_repeat('k', 32), 'aes-256-cbc'), qualification: everyFingerprint());
+
+    return $analyzer->analyze($queries, cardinalityDriver($plans, $tables));
+}
+
+/**
+ * An `orders` table of 1,000,000 rows that every query full-scans.
+ *
+ * @param  array<string, int>  $cardinality
+ * @return array<string, array{rows: int, columns: array<string, string>, cardinality: array<string, int>}>
+ */
+function millionOrders(array $cardinality = []): array
+{
+    return ['orders' => [
+        'rows' => 1_000_000,
+        'columns' => [
+            'id' => 'bigint unsigned', 'branch_id' => 'bigint unsigned', 'customer_id' => 'bigint unsigned', 'reference' => 'char(36)',
+            'status' => 'varchar(20)', 'kind' => "enum('dine_in','pickup','delivery')", 'is_paid' => 'tinyint(1)',
+            'total' => 'decimal(10,2)', 'created_at' => 'timestamp', 'closed_at' => 'timestamp', 'deleted_at' => 'timestamp',
+        ],
+        'cardinality' => $cardinality,
+    ]];
 }

@@ -16,7 +16,7 @@ final readonly class IndexCandidate
     public array $columns;
 
     /**
-     * @param  ColumnOrder  $order  the columns, with the blocks of equality columns the index serves in any order
+     * @param  ColumnOrder  $order  the columns, with the blocks of equality columns the index serves in any order, and the weak filters it serves the query without
      * @param  ?string  $note  the alternative when a range keeps the index from satisfying the sort
      * @param  bool  $onlyWeak  whether every column is a weak filter, so the index would barely narrow the rows read
      */
@@ -88,6 +88,9 @@ final readonly class IndexCandidate
         // block of equality columns can be served in any order, but the
         // selective block stays ahead of the weak one.
         $seeksBefore = static fn (array $seeks) => $seeks === [] ? [] : [$seeks, $weak];
+        // An index serves the query without them too, filtering on them the rows it
+        // reads; but not without a column the query also sorts or ranges on.
+        $optional = array_values(array_diff([...$weak, ...$notNull], $sort, $range === null ? [] : [$range]));
 
         if ($range === null || ($sort !== [] && $sort[0] === $range)) {
             $blocks = [...$seeksBefore($selective), ...$fixed($sort)];
@@ -103,13 +106,13 @@ final readonly class IndexCandidate
                 return $filters === [] ? null : new self(ColumnOrder::fixed($filters), onlyWeak: true);
             }
 
-            return new self(new ColumnOrder($blocks));
+            return new self(new ColumnOrder($blocks, $optional));
         }
 
         $ranged = [...$lists, ...($firstRange === null ? [] : [$firstRange])];
         $order = new ColumnOrder($lists === []
             ? [...$seeksBefore($selective), ...$fixed($ranged)]
-            : [$selective, ...$fixed($lists), $weak, ...$fixed($firstRange === null ? [] : [$firstRange])]);
+            : [$selective, ...$fixed($lists), $weak, ...$fixed($firstRange === null ? [] : [$firstRange])], $optional);
 
         if ($sort === []) {
             return new self($order);

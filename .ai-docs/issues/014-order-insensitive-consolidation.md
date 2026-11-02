@@ -2,7 +2,7 @@
 title: Consolidate Suggestions across equality-column permutations
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: done
 ---
 
 ## Parent
@@ -17,11 +17,17 @@ Treat each candidate as an ordered sequence of *groups* (equality set → weak-f
 
 ## Acceptance criteria
 
-- [ ] Unit: `(a, b, c)` and `(b, a, c)` where `a`, `b` are equality columns merge into one Suggestion serving both Fingerprints with summed impact.
-- [ ] Unit: `(a = ?, b > ?)` and `(b = ?, a > ?)` do NOT merge (different range columns).
-- [ ] Unit: a candidate whose equality set is a subset of another's equality set, with no conflicting range/sort, merges into the larger one.
-- [ ] Unit: a candidate already served by an existing index under permutation is dropped.
-- [ ] Staging cases #3/#25 and the `merchant_users` trio reproduce as fixtures and produce at most one Suggestion per servable group.
+- [x] Unit: `(a, b, c)` and `(b, a, c)` where `a`, `b` are equality columns merge into one Suggestion serving both Fingerprints with summed impact.
+- [x] Unit: `(a = ?, b > ?)` and `(b = ?, a > ?)` do NOT merge (different range columns).
+- [x] Unit: a candidate whose equality set is a subset of another's equality set, with no conflicting range/sort, merges into the larger one.
+- [x] Unit: a candidate already served by an existing index under permutation is dropped.
+- [x] Staging cases #3/#25 and the `merchant_users` trio reproduce as fixtures and produce at most one Suggestion per servable group.
+
+## Implementation decisions
+
+- Weak filters (`IS NULL`, `IS NOT NULL`, booleans, enums, low-cardinality equalities) are optional for the query they serve: an index serves it while taking them in any order or leaving them out, since the query filters the rows the index returns on them. Selective equality columns and range/sort columns are never left out.
+- Consolidation tries, most impact first, to fold one Suggestion into another as both are (either direction, any length); only when that fails may a Suggestion leave out its own weak filters to serve the other. So staging #20 and #26 merge into `(merchant_id, created_at)`, and #8 absorbs #18 as `(merchant_id, is_active, created_at, id)`.
+- Dedupe against existing indexes uses the same rule. Extend-existing is unchanged: an existing index must still be a left prefix of the Suggestion as proposed.
 
 ## Blocked by
 
