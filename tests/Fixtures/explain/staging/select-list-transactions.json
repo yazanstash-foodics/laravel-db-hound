@@ -1,0 +1,136 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "503.25"
+        },
+        "ordering_operation": {
+            "using_filesort": false,
+            "table": {
+                "table_name": "transactions",
+                "access_type": "index",
+                "possible_keys": [
+                    "transactions_transaction_date_merchant_id_index"
+                ],
+                "key": "transactions_transaction_date_merchant_id_index",
+                "used_key_parts": [
+                    "transaction_date",
+                    "merchant_id"
+                ],
+                "key_length": "15",
+                "rows_examined_per_scan": 50,
+                "rows_produced_per_join": 498,
+                "filtered": "10.00",
+                "backward_index_scan": true,
+                "cost_info": {
+                    "read_cost": "453.45",
+                    "eval_cost": "49.80",
+                    "prefix_cost": "503.25",
+                    "data_read_per_join": "509K"
+                },
+                "used_columns": [
+                    "id",
+                    "payment_id",
+                    "merchant_id",
+                    "terminal_id",
+                    "bank_channel_id",
+                    "bank_id",
+                    "branch_id",
+                    "channel_id",
+                    "status",
+                    "terminal_id8",
+                    "settleable",
+                    "card_scheme",
+                    "transaction_number",
+                    "order_reference",
+                    "transaction_date",
+                    "reported_by_bank_at",
+                    "not_settleable_reason",
+                    "legacy_id",
+                    "settled_by_bank_on",
+                    "reconciliation_number",
+                    "pts_code",
+                    "reconciliation_date",
+                    "amount",
+                    "net_amount",
+                    "reversed_transaction_id",
+                    "created_at",
+                    "updated_at",
+                    "deleted_at"
+                ],
+                "attached_condition": "((`db_hound_shapes`.`transactions`.`transaction_date` between '2026-01-01' and '2026-12-31') and (`db_hound_shapes`.`transactions`.`deleted_at` is null))"
+            },
+            "select_list_subqueries": [
+                {
+                    "dependent": true,
+                    "cacheable": false,
+                    "query_block": {
+                        "select_id": 3,
+                        "cost_info": {
+                            "query_cost": "0.35"
+                        },
+                        "table": {
+                            "table_name": "transaction_charges",
+                            "access_type": "ref",
+                            "possible_keys": [
+                                "transaction_charges_transaction_id_index"
+                            ],
+                            "key": "transaction_charges_transaction_id_index",
+                            "used_key_parts": [
+                                "transaction_id"
+                            ],
+                            "key_length": "9",
+                            "ref": [
+                                "db_hound_shapes.transactions.id"
+                            ],
+                            "rows_examined_per_scan": 1,
+                            "rows_produced_per_join": 0,
+                            "filtered": "10.00",
+                            "cost_info": {
+                                "read_cost": "0.25",
+                                "eval_cost": "0.01",
+                                "prefix_cost": "0.35",
+                                "data_read_per_join": "11"
+                            },
+                            "used_columns": [
+                                "transaction_id",
+                                "type",
+                                "amount"
+                            ],
+                            "attached_condition": "(`db_hound_shapes`.`transaction_charges`.`type` = 'fee')"
+                        }
+                    }
+                },
+                {
+                    "dependent": true,
+                    "cacheable": false,
+                    "query_block": {
+                        "select_id": 2,
+                        "cost_info": {
+                            "query_cost": "500.45"
+                        },
+                        "table": {
+                            "table_name": "pending_review_records",
+                            "access_type": "ALL",
+                            "rows_examined_per_scan": 4937,
+                            "rows_produced_per_join": 4,
+                            "filtered": "0.10",
+                            "cost_info": {
+                                "read_cost": "495.51",
+                                "eval_cost": "0.49",
+                                "prefix_cost": "500.45",
+                                "data_read_per_join": "4K"
+                            },
+                            "used_columns": [
+                                "pendable_id",
+                                "status",
+                                "deleted_at"
+                            ],
+                            "attached_condition": "((`db_hound_shapes`.`pending_review_records`.`status` = 'pending') and (`db_hound_shapes`.`pending_review_records`.`pendable_id` = `db_hound_shapes`.`transactions`.`id`) and (`db_hound_shapes`.`pending_review_records`.`deleted_at` is null))"
+                        }
+                    }
+                }
+            ]
+        }
+    }
+}

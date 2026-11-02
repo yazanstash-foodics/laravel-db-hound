@@ -356,7 +356,7 @@ The Report ends with `## Unparsed queries` (`None.` when it is empty). It lists 
   ```
 ````
 
-Each entry has the connection, a reason (for example the SQL parser could not handle the query, `EXPLAIN` failed with an SQLSTATE, the query reads another database, the table is filtered only on low-selectivity predicates such as `deleted_at IS NULL` that an index would barely narrow, or `cannot EXPLAIN without a Sample`), and the normalized SQL. Errors are reported by class and SQLSTATE only, because database error messages can contain binding values.
+Each entry has the connection, a reason (for example the SQL parser could not handle the query, `EXPLAIN` failed with an SQLSTATE, the query reads another database, the table is filtered only on low-selectivity predicates such as `deleted_at IS NULL` that an index would barely narrow, or `cannot EXPLAIN without a Sample`), and the normalized SQL. A Fingerprint appears at most once per reason, however many of its table accesses show it (a self-join whose table references share a name, for example). A full scan of a derived table (a subquery in `FROM`, such as Laravel's `laravel_table` or `latestOfMany`) is never listed: db-hound analyzes the tables its query reads instead, and the tables of subqueries in the `SELECT` list (`withCount`, `withSum`). Errors are reported by class and SQLSTATE only, because database error messages can contain binding values.
 
 ## Dump format
 

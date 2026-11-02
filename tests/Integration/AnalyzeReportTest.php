@@ -388,6 +388,69 @@ it('suggests an index on the inner table of a whereHas-style EXISTS subquery', f
         ->toContain("**Proposed columns (in order):** `kind`\n");
 });
 
+it('analyzes the inner query of a derived table, never listing the derived table itself', function () {
+    for ($i = 0; $i < 50; $i++) {
+        // The shape of a window-limited eager load (`laravel_table`).
+        DB::query()
+            ->fromSub(fn ($query) => $query->from('hound_orders')
+                ->selectRaw('*, row_number() over (partition by `branch_id` order by `placed_at` asc) as `laravel_row`')
+                ->where('customer_email', 'secret-binding-value@example.test'), 'laravel_table')
+            ->where('laravel_row', '<=', 3)
+            ->orderBy('laravel_row')
+            ->get();
+    }
+
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
+    $this->artisan('db-hound:analyze')->assertSuccessful();
+
+    $report = Storage::disk('local')->get('db-hound/latest.md');
+
+    expect($report)
+        ->toContain('**Unparsed queries:** 0')
+        ->not->toContain('laravel_table`, but')
+        ->and(substr_count($report, '### '))->toBe(1)
+        ->and($report)->toContain('**Table:** `hound_orders`')
+        ->toContain("**Proposed columns (in order):** `customer_email`\n");
+});
+
+it('suggests an index on the table of a withCount-style subquery in the SELECT list', function () {
+    Schema::create('hound_order_items', function (Blueprint $table) {
+        $table->id();
+        $table->unsignedBigInteger('hound_order_id');
+        $table->string('kind');
+    });
+
+    $items = array_map(fn (int $i) => ['hound_order_id' => $i % 2000 + 1, 'kind' => ['food', 'drink', 'extra'][$i % 3]], range(1, 3000));
+
+    foreach (array_chunk($items, 500) as $chunk) {
+        DB::table('hound_order_items')->insert($chunk);
+    }
+
+    DB::statement('ANALYZE TABLE hound_order_items');
+
+    for ($i = 0; $i < 50; $i++) {
+        DB::table('hound_orders')
+            ->select('hound_orders.*')
+            ->selectSub(fn ($query) => $query->from('hound_order_items')
+                ->selectRaw('count(*)')
+                ->whereColumn('hound_orders.id', 'hound_order_items.hound_order_id')
+                ->where('hound_order_items.kind', 'drink'), 'drinks_count')
+            ->where('branch_id', 7)
+            ->get();
+    }
+
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
+    $this->artisan('db-hound:analyze')->assertSuccessful();
+
+    $report = Storage::disk('local')->get('db-hound/latest.md');
+
+    expect($report)
+        ->toContain('**Unparsed queries:** 0')
+        ->and(substr_count($report, '### '))->toBe(1)
+        ->and($report)->toContain('**Table:** `hound_order_items`')
+        ->toContain("**Proposed columns (in order):** `hound_order_id`, `kind`\n");
+});
+
 it('lists a query the SQL parser cannot parse as unparsed and still writes the Report', function () {
     for ($i = 0; $i < 50; $i++) {
         DB::table('hound_orders')

@@ -1,0 +1,162 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "4.35"
+        },
+        "nested_loop": [
+            {
+                "table": {
+                    "table_name": "latestOfMany",
+                    "access_type": "ALL",
+                    "rows_examined_per_scan": 4,
+                    "rows_produced_per_join": 4,
+                    "filtered": "100.00",
+                    "cost_info": {
+                        "read_cost": "2.55",
+                        "eval_cost": "0.40",
+                        "prefix_cost": "2.95",
+                        "data_read_per_join": "3K"
+                    },
+                    "used_columns": [
+                        "id_aggregate",
+                        "last_used_at_aggregate",
+                        "tokenable_id",
+                        "tokenable_type"
+                    ],
+                    "attached_condition": "(`latestOfMany`.`id_aggregate` is not null)",
+                    "materialized_from_subquery": {
+                        "using_temporary_table": true,
+                        "dependent": false,
+                        "cacheable": true,
+                        "query_block": {
+                            "select_id": 2,
+                            "cost_info": {
+                                "query_cost": "103.32"
+                            },
+                            "grouping_operation": {
+                                "using_temporary_table": true,
+                                "using_filesort": false,
+                                "nested_loop": [
+                                    {
+                                        "table": {
+                                            "table_name": "latestOfMany",
+                                            "access_type": "ALL",
+                                            "rows_examined_per_scan": 5,
+                                            "rows_produced_per_join": 5,
+                                            "filtered": "100.00",
+                                            "cost_info": {
+                                                "read_cost": "2.56",
+                                                "eval_cost": "0.50",
+                                                "prefix_cost": "3.06",
+                                                "data_read_per_join": "3K"
+                                            },
+                                            "used_columns": [
+                                                "last_used_at_aggregate",
+                                                "tokenable_id",
+                                                "tokenable_type"
+                                            ],
+                                            "materialized_from_subquery": {
+                                                "using_temporary_table": true,
+                                                "dependent": false,
+                                                "cacheable": true,
+                                                "query_block": {
+                                                    "select_id": 3,
+                                                    "cost_info": {
+                                                        "query_cost": "20.25"
+                                                    },
+                                                    "grouping_operation": {
+                                                        "using_temporary_table": true,
+                                                        "using_filesort": false,
+                                                        "table": {
+                                                            "table_name": "personal_access_tokens",
+                                                            "access_type": "ALL",
+                                                            "rows_examined_per_scan": 200,
+                                                            "rows_produced_per_join": 5,
+                                                            "filtered": "3.00",
+                                                            "cost_info": {
+                                                                "read_cost": "19.65",
+                                                                "eval_cost": "0.60",
+                                                                "prefix_cost": "20.25",
+                                                                "data_read_per_join": "7K"
+                                                            },
+                                                            "used_columns": [
+                                                                "id",
+                                                                "tokenable_type",
+                                                                "tokenable_id",
+                                                                "last_used_at"
+                                                            ],
+                                                            "attached_condition": "((`db_hound_shapes`.`personal_access_tokens`.`tokenable_type` = 'App\\\\Models\\\\MerchantUser') and (`db_hound_shapes`.`personal_access_tokens`.`tokenable_id` in (42,43,44)))"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    },
+                                    {
+                                        "table": {
+                                            "table_name": "personal_access_tokens",
+                                            "access_type": "ALL",
+                                            "rows_examined_per_scan": 200,
+                                            "rows_produced_per_join": 4,
+                                            "filtered": "0.50",
+                                            "using_join_buffer": "hash join",
+                                            "cost_info": {
+                                                "read_cost": "0.25",
+                                                "eval_cost": "0.50",
+                                                "prefix_cost": "103.32",
+                                                "data_read_per_join": "5K"
+                                            },
+                                            "used_columns": [
+                                                "id",
+                                                "tokenable_type",
+                                                "tokenable_id",
+                                                "last_used_at"
+                                            ],
+                                            "attached_condition": "((`db_hound_shapes`.`personal_access_tokens`.`tokenable_id` = `latestOfMany`.`tokenable_id`) and (`db_hound_shapes`.`personal_access_tokens`.`tokenable_type` = `latestOfMany`.`tokenable_type`) and (`db_hound_shapes`.`personal_access_tokens`.`last_used_at` = `latestOfMany`.`last_used_at_aggregate`))"
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "table": {
+                    "table_name": "personal_access_tokens",
+                    "access_type": "eq_ref",
+                    "possible_keys": [
+                        "PRIMARY"
+                    ],
+                    "key": "PRIMARY",
+                    "used_key_parts": [
+                        "id"
+                    ],
+                    "key_length": "8",
+                    "ref": [
+                        "latestOfMany.id_aggregate"
+                    ],
+                    "rows_examined_per_scan": 1,
+                    "rows_produced_per_join": 0,
+                    "filtered": "5.00",
+                    "cost_info": {
+                        "read_cost": "1.00",
+                        "eval_cost": "0.02",
+                        "prefix_cost": "4.35",
+                        "data_read_per_join": "240"
+                    },
+                    "used_columns": [
+                        "id",
+                        "tokenable_type",
+                        "tokenable_id",
+                        "name",
+                        "last_used_at",
+                        "created_at"
+                    ],
+                    "attached_condition": "((`db_hound_shapes`.`personal_access_tokens`.`tokenable_id` = `latestOfMany`.`tokenable_id`) and (`db_hound_shapes`.`personal_access_tokens`.`tokenable_type` = `latestOfMany`.`tokenable_type`) and (`db_hound_shapes`.`personal_access_tokens`.`last_used_at` = `latestOfMany`.`last_used_at_aggregate`))"
+                }
+            }
+        ]
+    }
+}

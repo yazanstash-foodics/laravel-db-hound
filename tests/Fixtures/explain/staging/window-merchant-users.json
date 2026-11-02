@@ -1,0 +1,100 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "3.72"
+        },
+        "ordering_operation": {
+            "using_filesort": true,
+            "cost_info": {
+                "sort_cost": "1.00"
+            },
+            "table": {
+                "table_name": "laravel_table",
+                "access_type": "ALL",
+                "rows_examined_per_scan": 2,
+                "rows_produced_per_join": 1,
+                "filtered": "50.00",
+                "cost_info": {
+                    "read_cost": "2.62",
+                    "eval_cost": "0.10",
+                    "prefix_cost": "2.73",
+                    "data_read_per_join": "808"
+                },
+                "used_columns": [
+                    "id",
+                    "merchant_id",
+                    "email",
+                    "is_active",
+                    "is_contact_user",
+                    "created_at",
+                    "deleted_at",
+                    "laravel_row"
+                ],
+                "attached_condition": "(`laravel_table`.`laravel_row` <= 1)",
+                "materialized_from_subquery": {
+                    "using_temporary_table": true,
+                    "dependent": false,
+                    "cacheable": true,
+                    "query_block": {
+                        "select_id": 2,
+                        "cost_info": {
+                            "query_cost": "6.53"
+                        },
+                        "windowing": {
+                            "windows": [
+                                {
+                                    "name": "<unnamed window>",
+                                    "using_filesort": true,
+                                    "filesort_key": [
+                                        "`merchant_id`",
+                                        "`created_at`"
+                                    ],
+                                    "functions": [
+                                        "row_number"
+                                    ]
+                                }
+                            ],
+                            "cost_info": {
+                                "sort_cost": "1.72"
+                            },
+                            "table": {
+                                "table_name": "merchant_users",
+                                "access_type": "range",
+                                "possible_keys": [
+                                    "merchant_users_merchant_id_index",
+                                    "merchant_users_is_contact_user_index"
+                                ],
+                                "key": "merchant_users_merchant_id_index",
+                                "used_key_parts": [
+                                    "merchant_id"
+                                ],
+                                "key_length": "9",
+                                "rows_examined_per_scan": 9,
+                                "rows_produced_per_join": 1,
+                                "filtered": "19.15",
+                                "index_condition": "(`db_hound_shapes`.`merchant_users`.`merchant_id` in (7,8,9))",
+                                "cost_info": {
+                                    "read_cost": "4.64",
+                                    "eval_cost": "0.17",
+                                    "prefix_cost": "4.81",
+                                    "data_read_per_join": "1K"
+                                },
+                                "used_columns": [
+                                    "id",
+                                    "merchant_id",
+                                    "email",
+                                    "is_active",
+                                    "is_contact_user",
+                                    "created_at",
+                                    "deleted_at"
+                                ],
+                                "attached_condition": "(`db_hound_shapes`.`merchant_users`.`is_contact_user` = 1)"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

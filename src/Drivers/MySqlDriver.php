@@ -403,9 +403,10 @@ final class MySqlDriver implements Driver
      *
      * @param  array<mixed>  $node
      * @param  list<TableAccess>  $accesses
-     * @param  bool  $materialized  whether the node is part of a materialized subquery or derived table
+     * @param  list<string>  $within  the tables whose materialization the node is part of, outermost first
+     * @param  bool  $selectList  whether the node is part of a subquery in the SELECT list
      */
-    private static function walk(array $node, array &$accesses, bool &$filesort, bool &$temporary, bool $materialized = false): void
+    private static function walk(array $node, array &$accesses, bool &$filesort, bool &$temporary, array $within = [], bool $selectList = false): void
     {
         if (($node['using_filesort'] ?? false) === true) {
             $filesort = true;
@@ -415,19 +416,32 @@ final class MySqlDriver implements Driver
             $temporary = true;
         }
 
-        if (isset($node['table_name'], $node['access_type'])) {
+        $table = isset($node['table_name']) ? (string) $node['table_name'] : null;
+
+        if ($table !== null && isset($node['access_type'])) {
             $accesses[] = new TableAccess(
-                table: (string) $node['table_name'],
+                table: $table,
                 accessType: (string) $node['access_type'],
                 key: isset($node['key']) ? (string) $node['key'] : null,
                 rowsExamined: isset($node['rows_examined_per_scan']) ? (int) $node['rows_examined_per_scan'] : null,
-                materialized: $materialized,
+                materialized: $within !== [],
+                within: $within,
+                // A semijoin materializes `<subqueryN>`, a derived table its alias (or `<derivedN>`).
+                derived: isset($node['materialized_from_subquery']) && ! str_starts_with($table, '<subquery'),
+                selectList: $selectList,
             );
         }
 
         foreach ($node as $key => $child) {
             if (is_array($child)) {
-                self::walk($child, $accesses, $filesort, $temporary, $materialized || $key === 'materialized_from_subquery');
+                self::walk(
+                    $child,
+                    $accesses,
+                    $filesort,
+                    $temporary,
+                    $key === 'materialized_from_subquery' ? [...$within, (string) $table] : $within,
+                    $selectList || $key === 'select_list_subqueries',
+                );
             }
         }
     }

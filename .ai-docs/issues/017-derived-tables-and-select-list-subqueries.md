@@ -2,7 +2,7 @@
 title: Handle derived tables and SELECT-list subqueries; dedupe unparsed entries
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: done
 ---
 
 ## Parent
@@ -21,11 +21,11 @@ Recognize derived-table aliases (from EXPLAIN's `materialized_from_subquery` / `
 
 ## Acceptance criteria
 
-- [ ] Unit (recorded EXPLAIN fixtures): a `latestOfMany` query produces no "no such table" entry and analyzes `personal_access_tokens` predicates from the inner query.
-- [ ] Unit: a window-function eager load (`laravel_table`) analyzes the inner `orders` / `merchant_users` predicates.
-- [ ] Unit: a `withCount`-style SELECT-list subquery yields a Suggestion on the subquery's table (e.g. `pending_review_records (pendable_id, …)`).
-- [ ] Each (Fingerprint, reason) appears at most once under "Unparsed queries".
-- [ ] The 11 staging unparsed queries (SQL in `fixtures/analyze.md`), replayed as recorded fixtures, produce ≤ 3 unparsed entries.
+- [x] Unit (recorded EXPLAIN fixtures): a `latestOfMany` query produces no "no such table" entry and analyzes `personal_access_tokens` predicates from the inner query.
+- [x] Unit: a window-function eager load (`laravel_table`) analyzes the inner `orders` / `merchant_users` predicates.
+- [x] Unit: a `withCount`-style SELECT-list subquery yields a Suggestion on the subquery's table (e.g. `pending_review_records (pendable_id, …)`).
+- [x] Each (Fingerprint, reason) appears at most once under "Unparsed queries".
+- [x] The 11 staging unparsed queries (SQL in `fixtures/analyze.md`), replayed as recorded fixtures, produce ≤ 3 unparsed entries.
 
 ## Blocked by
 

@@ -67,11 +67,15 @@ final class TableColumns
      * @param  string  $name  how EXPLAIN names the reference: its alias, else its table
      * @param  string  $table  the base table
      * @param  ?string  $database  the database the query names for the table, if any
+     * @param  list<string>  $within  the aliases of the derived tables (FROM subqueries) whose query reads it, outermost first
+     * @param  bool  $selectList  whether a subquery in the SELECT list reads it
      */
     public function __construct(
         public readonly string $name,
         public readonly string $table,
         public readonly ?string $database = null,
+        public readonly array $within = [],
+        public readonly bool $selectList = false,
     ) {}
 
     public function addEquality(string $column, ?string $joinedTo = null): void

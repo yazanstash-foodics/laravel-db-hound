@@ -1,0 +1,561 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "1.43"
+        },
+        "nested_loop": [
+            {
+                "table": {
+                    "table_name": "merchant_users",
+                    "access_type": "range",
+                    "possible_keys": [
+                        "PRIMARY",
+                        "merchant_users_email_merchant_id_unique",
+                        "merchant_users_merchant_id_index",
+                        "merchant_users_email_index",
+                        "merchant_users_is_active_index"
+                    ],
+                    "key": "merchant_users_email_merchant_id_unique",
+                    "used_key_parts": [
+                        "email",
+                        "merchant_id"
+                    ],
+                    "key_length": "776",
+                    "rows_examined_per_scan": 2,
+                    "rows_produced_per_join": 0,
+                    "filtered": "2.51",
+                    "index_condition": "((`db_hound_shapes`.`merchant_users`.`email` = 'u5@example.com') and (`db_hound_shapes`.`merchant_users`.`merchant_id` <> 7) and (`db_hound_shapes`.`merchant_users`.`id` <> 9))",
+                    "cost_info": {
+                        "read_cost": "1.40",
+                        "eval_cost": "0.01",
+                        "prefix_cost": "1.41",
+                        "data_read_per_join": "40"
+                    },
+                    "used_columns": [
+                        "id",
+                        "merchant_id",
+                        "email",
+                        "is_active",
+                        "deleted_at"
+                    ],
+                    "attached_condition": "((`db_hound_shapes`.`merchant_users`.`is_active` = 1) and (`db_hound_shapes`.`merchant_users`.`deleted_at` is null))"
+                }
+            },
+            {
+                "table": {
+                    "table_name": "merchants",
+                    "access_type": "eq_ref",
+                    "possible_keys": [
+                        "PRIMARY"
+                    ],
+                    "key": "PRIMARY",
+                    "used_key_parts": [
+                        "id"
+                    ],
+                    "key_length": "8",
+                    "ref": [
+                        "db_hound_shapes.merchant_users.merchant_id"
+                    ],
+                    "rows_examined_per_scan": 1,
+                    "rows_produced_per_join": 0,
+                    "filtered": "10.00",
+                    "cost_info": {
+                        "read_cost": "0.01",
+                        "eval_cost": "0.00",
+                        "prefix_cost": "1.43",
+                        "data_read_per_join": "2"
+                    },
+                    "used_columns": [
+                        "id",
+                        "name",
+                        "created_at",
+                        "deleted_at"
+                    ],
+                    "attached_condition": "(`db_hound_shapes`.`merchants`.`deleted_at` is null)"
+                }
+            }
+        ],
+        "select_list_subqueries": [
+            {
+                "dependent": true,
+                "cacheable": false,
+                "query_block": {
+                    "select_id": 13,
+                    "cost_info": {
+                        "query_cost": "0.35"
+                    },
+                    "table": {
+                        "table_name": "merchant_users",
+                        "access_type": "eq_ref",
+                        "possible_keys": [
+                            "merchant_users_email_merchant_id_unique",
+                            "merchant_users_merchant_id_index",
+                            "merchant_users_email_index",
+                            "merchant_users_is_active_index"
+                        ],
+                        "key": "merchant_users_email_merchant_id_unique",
+                        "used_key_parts": [
+                            "email",
+                            "merchant_id"
+                        ],
+                        "key_length": "776",
+                        "ref": [
+                            "const",
+                            "db_hound_shapes.merchants.id"
+                        ],
+                        "rows_examined_per_scan": 1,
+                        "rows_produced_per_join": 0,
+                        "filtered": "5.00",
+                        "cost_info": {
+                            "read_cost": "0.25",
+                            "eval_cost": "0.01",
+                            "prefix_cost": "0.35",
+                            "data_read_per_join": "40"
+                        },
+                        "used_columns": [
+                            "id",
+                            "merchant_id",
+                            "email",
+                            "is_active",
+                            "deleted_at"
+                        ],
+                        "attached_condition": "((`db_hound_shapes`.`merchant_users`.`is_active` = 1) and (`db_hound_shapes`.`merchant_users`.`deleted_at` is null))"
+                    }
+                }
+            },
+            {
+                "dependent": true,
+                "cacheable": false,
+                "query_block": {
+                    "select_id": 12,
+                    "cost_info": {
+                        "query_cost": "0.35"
+                    },
+                    "table": {
+                        "table_name": "whitelist",
+                        "access_type": "eq_ref",
+                        "possible_keys": [
+                            "PRIMARY"
+                        ],
+                        "key": "PRIMARY",
+                        "used_key_parts": [
+                            "id"
+                        ],
+                        "key_length": "8",
+                        "ref": [
+                            "db_hound_shapes.merchants.id"
+                        ],
+                        "rows_examined_per_scan": 1,
+                        "rows_produced_per_join": 0,
+                        "filtered": "10.00",
+                        "cost_info": {
+                            "read_cost": "0.25",
+                            "eval_cost": "0.01",
+                            "prefix_cost": "0.35",
+                            "data_read_per_join": "17"
+                        },
+                        "used_columns": [
+                            "id",
+                            "type"
+                        ],
+                        "attached_condition": "(`db_hound_shapes`.`whitelist`.`type` = 'terminal_reconciliation')"
+                    }
+                }
+            },
+            {
+                "dependent": true,
+                "cacheable": false,
+                "query_block": {
+                    "select_id": 11,
+                    "cost_info": {
+                        "query_cost": "0.35"
+                    },
+                    "table": {
+                        "table_name": "whitelist",
+                        "access_type": "eq_ref",
+                        "possible_keys": [
+                            "PRIMARY"
+                        ],
+                        "key": "PRIMARY",
+                        "used_key_parts": [
+                            "id"
+                        ],
+                        "key_length": "8",
+                        "ref": [
+                            "db_hound_shapes.merchants.id"
+                        ],
+                        "rows_examined_per_scan": 1,
+                        "rows_produced_per_join": 0,
+                        "filtered": "10.00",
+                        "cost_info": {
+                            "read_cost": "0.25",
+                            "eval_cost": "0.01",
+                            "prefix_cost": "0.35",
+                            "data_read_per_join": "17"
+                        },
+                        "used_columns": [
+                            "id",
+                            "type"
+                        ],
+                        "attached_condition": "(`db_hound_shapes`.`whitelist`.`type` = 'bank_reconciliation')"
+                    }
+                }
+            },
+            {
+                "dependent": true,
+                "cacheable": false,
+                "query_block": {
+                    "select_id": 10,
+                    "cost_info": {
+                        "query_cost": "0.35"
+                    },
+                    "table": {
+                        "table_name": "whitelist",
+                        "access_type": "eq_ref",
+                        "possible_keys": [
+                            "PRIMARY"
+                        ],
+                        "key": "PRIMARY",
+                        "used_key_parts": [
+                            "id"
+                        ],
+                        "key_length": "8",
+                        "ref": [
+                            "db_hound_shapes.merchants.id"
+                        ],
+                        "rows_examined_per_scan": 1,
+                        "rows_produced_per_join": 0,
+                        "filtered": "10.00",
+                        "cost_info": {
+                            "read_cost": "0.25",
+                            "eval_cost": "0.01",
+                            "prefix_cost": "0.35",
+                            "data_read_per_join": "17"
+                        },
+                        "used_columns": [
+                            "id",
+                            "type"
+                        ],
+                        "attached_condition": "(`db_hound_shapes`.`whitelist`.`type` = 'customer_insights')"
+                    }
+                }
+            },
+            {
+                "dependent": true,
+                "cacheable": false,
+                "query_block": {
+                    "select_id": 9,
+                    "cost_info": {
+                        "query_cost": "0.35"
+                    },
+                    "table": {
+                        "table_name": "adjustments",
+                        "access_type": "ref",
+                        "possible_keys": [
+                            "adjustments_merchant_id_index",
+                            "adjustments_type_index"
+                        ],
+                        "key": "adjustments_type_index",
+                        "used_key_parts": [
+                            "type"
+                        ],
+                        "key_length": "83",
+                        "ref": [
+                            "const"
+                        ],
+                        "rows_examined_per_scan": 1,
+                        "rows_produced_per_join": 0,
+                        "filtered": "5.00",
+                        "cost_info": {
+                            "read_cost": "0.25",
+                            "eval_cost": "0.01",
+                            "prefix_cost": "0.35",
+                            "data_read_per_join": "5"
+                        },
+                        "used_columns": [
+                            "id",
+                            "merchant_id",
+                            "type",
+                            "is_approved"
+                        ],
+                        "attached_condition": "((`db_hound_shapes`.`adjustments`.`merchant_id` = 7) and (`db_hound_shapes`.`adjustments`.`is_approved` = 1) and (7 = `db_hound_shapes`.`merchants`.`id`))"
+                    }
+                }
+            },
+            {
+                "dependent": true,
+                "cacheable": false,
+                "query_block": {
+                    "select_id": 8,
+                    "cost_info": {
+                        "query_cost": "0.70"
+                    },
+                    "table": {
+                        "table_name": "adjustments",
+                        "access_type": "ref",
+                        "possible_keys": [
+                            "adjustments_merchant_id_index",
+                            "adjustments_type_index"
+                        ],
+                        "key": "adjustments_merchant_id_index",
+                        "used_key_parts": [
+                            "merchant_id"
+                        ],
+                        "key_length": "9",
+                        "ref": [
+                            "const"
+                        ],
+                        "rows_examined_per_scan": 2,
+                        "rows_produced_per_join": 0,
+                        "filtered": "5.00",
+                        "cost_info": {
+                            "read_cost": "0.50",
+                            "eval_cost": "0.01",
+                            "prefix_cost": "0.70",
+                            "data_read_per_join": "10"
+                        },
+                        "used_columns": [
+                            "id",
+                            "merchant_id",
+                            "type",
+                            "is_approved"
+                        ],
+                        "attached_condition": "((`db_hound_shapes`.`adjustments`.`type` = 'supply') and (`db_hound_shapes`.`adjustments`.`is_approved` = 1) and (7 = `db_hound_shapes`.`merchants`.`id`))"
+                    }
+                }
+            },
+            {
+                "dependent": true,
+                "cacheable": false,
+                "query_block": {
+                    "select_id": 7,
+                    "cost_info": {
+                        "query_cost": "0.70"
+                    },
+                    "table": {
+                        "table_name": "adjustments",
+                        "access_type": "ref",
+                        "possible_keys": [
+                            "adjustments_merchant_id_index",
+                            "adjustments_type_index"
+                        ],
+                        "key": "adjustments_merchant_id_index",
+                        "used_key_parts": [
+                            "merchant_id"
+                        ],
+                        "key_length": "9",
+                        "ref": [
+                            "const"
+                        ],
+                        "rows_examined_per_scan": 2,
+                        "rows_produced_per_join": 0,
+                        "filtered": "5.00",
+                        "cost_info": {
+                            "read_cost": "0.50",
+                            "eval_cost": "0.01",
+                            "prefix_cost": "0.70",
+                            "data_read_per_join": "10"
+                        },
+                        "used_columns": [
+                            "id",
+                            "merchant_id",
+                            "type",
+                            "is_approved"
+                        ],
+                        "attached_condition": "((`db_hound_shapes`.`adjustments`.`type` = 'bnpl') and (`db_hound_shapes`.`adjustments`.`is_approved` = 1) and (7 = `db_hound_shapes`.`merchants`.`id`))"
+                    }
+                }
+            },
+            {
+                "dependent": true,
+                "cacheable": false,
+                "query_block": {
+                    "select_id": 6,
+                    "cost_info": {
+                        "query_cost": "0.70"
+                    },
+                    "table": {
+                        "table_name": "loans",
+                        "access_type": "ref",
+                        "possible_keys": [
+                            "loans_merchant_id_index"
+                        ],
+                        "key": "loans_merchant_id_index",
+                        "used_key_parts": [
+                            "merchant_id"
+                        ],
+                        "key_length": "9",
+                        "ref": [
+                            "const"
+                        ],
+                        "rows_examined_per_scan": 2,
+                        "rows_produced_per_join": 0,
+                        "filtered": "10.00",
+                        "cost_info": {
+                            "read_cost": "0.50",
+                            "eval_cost": "0.02",
+                            "prefix_cost": "0.70",
+                            "data_read_per_join": "20"
+                        },
+                        "used_columns": [
+                            "id",
+                            "merchant_id",
+                            "type"
+                        ],
+                        "attached_condition": "((`db_hound_shapes`.`loans`.`type` = 'capital') and (7 = `db_hound_shapes`.`merchants`.`id`))"
+                    }
+                }
+            },
+            {
+                "dependent": true,
+                "cacheable": false,
+                "query_block": {
+                    "select_id": 5,
+                    "cost_info": {
+                        "query_cost": "0.70"
+                    },
+                    "table": {
+                        "table_name": "loans",
+                        "access_type": "ref",
+                        "possible_keys": [
+                            "loans_merchant_id_index"
+                        ],
+                        "key": "loans_merchant_id_index",
+                        "used_key_parts": [
+                            "merchant_id"
+                        ],
+                        "key_length": "9",
+                        "ref": [
+                            "const"
+                        ],
+                        "rows_examined_per_scan": 2,
+                        "rows_produced_per_join": 0,
+                        "filtered": "2.50",
+                        "cost_info": {
+                            "read_cost": "0.50",
+                            "eval_cost": "0.01",
+                            "prefix_cost": "0.70",
+                            "data_read_per_join": "5"
+                        },
+                        "used_columns": [
+                            "id",
+                            "merchant_id",
+                            "type",
+                            "is_active"
+                        ],
+                        "attached_condition": "((`db_hound_shapes`.`loans`.`is_active` = 1) and (`db_hound_shapes`.`loans`.`type` = 'tanmeya') and (7 = `db_hound_shapes`.`merchants`.`id`))"
+                    }
+                }
+            },
+            {
+                "dependent": true,
+                "cacheable": false,
+                "query_block": {
+                    "select_id": 4,
+                    "cost_info": {
+                        "query_cost": "500.45"
+                    },
+                    "table": {
+                        "table_name": "pending_review_records",
+                        "access_type": "ALL",
+                        "rows_examined_per_scan": 4937,
+                        "rows_produced_per_join": 4,
+                        "filtered": "0.10",
+                        "cost_info": {
+                            "read_cost": "495.51",
+                            "eval_cost": "0.49",
+                            "prefix_cost": "500.45",
+                            "data_read_per_join": "4K"
+                        },
+                        "used_columns": [
+                            "pendable_id",
+                            "pendable_type",
+                            "deleted_at"
+                        ],
+                        "attached_condition": "((`db_hound_shapes`.`pending_review_records`.`pendable_type` = 'App\\\\Models\\\\Merchant') and (`db_hound_shapes`.`merchants`.`id` = `db_hound_shapes`.`pending_review_records`.`pendable_id`) and (`db_hound_shapes`.`pending_review_records`.`deleted_at` is null))"
+                    }
+                }
+            },
+            {
+                "dependent": true,
+                "cacheable": false,
+                "query_block": {
+                    "select_id": 3,
+                    "cost_info": {
+                        "query_cost": "3.17"
+                    },
+                    "table": {
+                        "table_name": "terminals",
+                        "access_type": "ref",
+                        "possible_keys": [
+                            "terminals_merchant_id_status_index",
+                            "terminals_is_active_index"
+                        ],
+                        "key": "terminals_merchant_id_status_index",
+                        "used_key_parts": [
+                            "merchant_id"
+                        ],
+                        "key_length": "9",
+                        "ref": [
+                            "const"
+                        ],
+                        "rows_examined_per_scan": 3,
+                        "rows_produced_per_join": 1,
+                        "filtered": "50.00",
+                        "cost_info": {
+                            "read_cost": "2.88",
+                            "eval_cost": "0.15",
+                            "prefix_cost": "3.17",
+                            "data_read_per_join": "180"
+                        },
+                        "used_columns": [
+                            "merchant_id",
+                            "is_active"
+                        ],
+                        "attached_condition": "((`db_hound_shapes`.`terminals`.`is_active` = 1) and (`db_hound_shapes`.`merchants`.`id` = 7))"
+                    }
+                }
+            },
+            {
+                "dependent": true,
+                "cacheable": false,
+                "query_block": {
+                    "select_id": 2,
+                    "cost_info": {
+                        "query_cost": "1.21"
+                    },
+                    "table": {
+                        "table_name": "terminals",
+                        "access_type": "ref",
+                        "possible_keys": [
+                            "terminals_merchant_id_status_index"
+                        ],
+                        "key": "terminals_merchant_id_status_index",
+                        "used_key_parts": [
+                            "merchant_id"
+                        ],
+                        "key_length": "9",
+                        "ref": [
+                            "const"
+                        ],
+                        "rows_examined_per_scan": 3,
+                        "rows_produced_per_join": 3,
+                        "filtered": "100.00",
+                        "using_index": true,
+                        "cost_info": {
+                            "read_cost": "0.91",
+                            "eval_cost": "0.30",
+                            "prefix_cost": "1.21",
+                            "data_read_per_join": "360"
+                        },
+                        "used_columns": [
+                            "merchant_id"
+                        ],
+                        "attached_condition": "(`db_hound_shapes`.`merchants`.`id` = 7)"
+                    }
+                }
+            }
+        ]
+    }
+}

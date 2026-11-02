@@ -1,0 +1,68 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "514.26"
+        },
+        "grouping_operation": {
+            "using_temporary_table": true,
+            "using_filesort": false,
+            "table": {
+                "table_name": "diff",
+                "access_type": "ALL",
+                "rows_examined_per_scan": 4549,
+                "rows_produced_per_join": 4549,
+                "filtered": "100.00",
+                "cost_info": {
+                    "read_cost": "59.36",
+                    "eval_cost": "454.90",
+                    "prefix_cost": "514.26",
+                    "data_read_per_join": "888K"
+                },
+                "used_columns": [
+                    "difference",
+                    "account_number",
+                    "bank_id",
+                    "merchant_id"
+                ],
+                "materialized_from_subquery": {
+                    "using_temporary_table": true,
+                    "dependent": false,
+                    "cacheable": true,
+                    "query_block": {
+                        "select_id": 2,
+                        "cost_info": {
+                            "query_cost": "511.25"
+                        },
+                        "grouping_operation": {
+                            "using_temporary_table": true,
+                            "using_filesort": false,
+                            "table": {
+                                "table_name": "bank_statements_summary",
+                                "access_type": "ALL",
+                                "rows_examined_per_scan": 5055,
+                                "rows_produced_per_join": 4549,
+                                "filtered": "90.00",
+                                "cost_info": {
+                                    "read_cost": "56.30",
+                                    "eval_cost": "454.95",
+                                    "prefix_cost": "511.25",
+                                    "data_read_per_join": "924K"
+                                },
+                                "used_columns": [
+                                    "id",
+                                    "merchant_id",
+                                    "bank_id",
+                                    "account_number",
+                                    "credit",
+                                    "debit"
+                                ],
+                                "attached_condition": "(`db_hound_shapes`.`bank_statements_summary`.`merchant_id` is not null)"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

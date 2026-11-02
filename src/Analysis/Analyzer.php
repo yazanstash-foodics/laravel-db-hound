@@ -152,7 +152,25 @@ final class Analyzer
             }
         }
 
-        return new AnalysisResult($ranked, $unparsed, $explained);
+        return new AnalysisResult($ranked, self::distinct($unparsed), $explained);
+    }
+
+    /**
+     * Each Fingerprint once per reason: a plan can show the same symptom on
+     * several accesses (a self-join, a table read in several subqueries).
+     *
+     * @param  list<UnparsedQuery>  $unparsed
+     * @return list<UnparsedQuery>
+     */
+    private static function distinct(array $unparsed): array
+    {
+        $distinct = [];
+
+        foreach ($unparsed as $query) {
+            $distinct[$query->connection."\0".$query->sql."\0".$query->reason] ??= $query;
+        }
+
+        return array_values($distinct);
     }
 
     /**
@@ -263,16 +281,23 @@ final class Analyzer
         }
 
         $candidates = [];
-        // Tables inside materialized subqueries are read apart from the join around them.
-        $readBefore = ['outer' => [], 'materialized' => []];
+        // Tables inside a materialized subquery or derived table are read apart from the join around it.
+        $readBefore = [];
         $driving = $this->driving($plan);
+        $materialized = $this->materializedDerived($plan, $extracted);
 
         foreach ($symptoms as $position => $reasons) {
             $access = $plan->accesses[$position];
-            $group = $access->materialized ? 'materialized' : 'outer';
-            $before = $readBefore[$group];
+            $group = $access->materialized ? 'materialized:'.implode("\0", $access->within) : 'outer';
+            $before = $readBefore[$group] ?? [];
             $readBefore[$group][] = $access->table;
-            $references = $extracted->named($access->table);
+
+            // A derived table is a temporary table the plan reads in full by design: the tables inside it are what an index serves.
+            if ($access->derived || $extracted->isDerived($access->table)) {
+                continue;
+            }
+
+            $references = $extracted->named($access->table, $access->within, $materialized, $access->selectList);
 
             if (count($references) !== 1) {
                 if ($reasons !== [] && ($references === [] || ! $this->allSmall($references, $driver))) {
@@ -351,6 +376,31 @@ final class Analyzer
         }
 
         return $candidates;
+    }
+
+    /**
+     * The derived tables the plan materializes: those it reads, or reads
+     * tables inside of. The others MySQL merged into the query around them.
+     *
+     * @return list<string>
+     */
+    private function materializedDerived(Plan $plan, ExtractedColumns $extracted): array
+    {
+        $materialized = [];
+
+        foreach ($plan->accesses as $access) {
+            if ($access->derived || $extracted->isDerived($access->table)) {
+                $materialized[] = $access->table;
+            }
+
+            foreach ($access->within as $table) {
+                if (! str_starts_with($table, '<subquery')) {
+                    $materialized[] = $table;
+                }
+            }
+        }
+
+        return array_values(array_unique($materialized));
     }
 
     /**
