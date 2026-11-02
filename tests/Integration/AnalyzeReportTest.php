@@ -322,8 +322,35 @@ it('proposes extending an existing index that is a left prefix of the needed one
         ->toContain('**Unparsed queries:** 0')
         ->and(substr_count($report, '### '))->toBe(1)
         ->and($report)->toContain('### 1. `hound_orders` (`branch_id`, `placed_at`) — extends `hound_orders_branch_id_index`')
-        ->toContain('**Kind:** extend existing index `hound_orders_branch_id_index` (`branch_id`) to (`branch_id`, `placed_at`): add this one first, then drop `hound_orders_branch_id_index` (dropping it first fails if a foreign key needs it, and leaves the table without an index on `branch_id` meanwhile)')
+        ->toContain('**Kind:** extend existing index `hound_orders_branch_id_index` (`branch_id`), chosen because it is used by the current plan, to (`branch_id`, `placed_at`): add this one first, then drop `hound_orders_branch_id_index` (dropping it first fails if a foreign key needs it, and leaves the table without an index on `branch_id` meanwhile)')
         ->toContain('filesort');
+});
+
+it('extends the index the optimizer chose, not the one the cardinality order would put first', function () {
+    config()->set('db-hound.enabled', false);
+    Schema::table('hound_orders', function (Blueprint $table) {
+        $table->unsignedBigInteger('region_id')->default(0)->index();
+    });
+    // 20 regions, fewer than the 40 branches, but region 999 has a single order: EXPLAIN reads it by its index.
+    DB::statement('UPDATE hound_orders SET region_id = IF(id = 1, 999, id % 19)');
+    DB::statement('ANALYZE TABLE hound_orders');
+    config()->set('db-hound.enabled', true);
+
+    for ($i = 0; $i < 50; $i++) {
+        DB::table('hound_orders')->where('branch_id', 7)->where('region_id', 999)->orderBy('placed_at')->get();
+    }
+
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
+    $this->artisan('db-hound:analyze')->assertSuccessful();
+
+    $report = Storage::disk('local')->get('db-hound/latest.md');
+
+    expect($report)
+        ->toContain('**Unparsed queries:** 0')
+        ->and(substr_count($report, '### '))->toBe(1)
+        ->and($report)->toContain('| ref | hound_orders_region_id_index |')
+        ->toContain('### 1. `hound_orders` (`region_id`, `branch_id`, `placed_at`) — extends `hound_orders_region_id_index`')
+        ->toContain('**Kind:** extend existing index `hound_orders_region_id_index` (`region_id`), chosen because it is used by the current plan, to (`region_id`, `branch_id`, `placed_at`): add');
 });
 
 it('suggests an index on the inner table of a whereHas-style EXISTS subquery', function () {

@@ -54,6 +54,26 @@ final readonly class Selectivity
     }
 
     /**
+     * The column with strictly more estimated distinct values than each
+     * other one, or null when none has (a tie, or no estimates): `order()`
+     * then puts first the one that comes first alphabetically.
+     *
+     * @param  list<string>  $columns
+     */
+    public function mostSelective(array $columns): ?string
+    {
+        $ordered = $this->order($columns);
+        $first = $ordered[0] ?? null;
+        $estimate = $first === null ? null : $this->estimate($first);
+
+        if ($first === null || $estimate === null) {
+            return null;
+        }
+
+        return ! isset($ordered[1]) || $estimate > ($this->estimate($ordered[1]) ?? -1) ? $first : null;
+    }
+
+    /**
      * The estimated distinct values of a column: its statistics, or else
      * what its type allows (2 for a boolean, the members of an enum).
      */

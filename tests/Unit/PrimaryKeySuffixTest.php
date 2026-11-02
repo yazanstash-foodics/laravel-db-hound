@@ -222,7 +222,7 @@ it('warns, when it extends an index it may have suggested for its primary key su
     expect(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->extends?->name], $result->suggestions))
         ->toBe([[['customer_id', 'created_at', 'total'], 'orders_customer_id_created_at_index']])
         ->and((new ReportRenderer)->render(reportContext(), $result))
-        ->toContain('- **Kind:** extend existing index `orders_customer_id_created_at_index` (`customer_id`, `created_at`) to (`customer_id`, `created_at`, `total`): '
+        ->toContain('- **Kind:** extend existing index `orders_customer_id_created_at_index` (`customer_id`, `created_at`), chosen because it is used by the current plan, to (`customer_id`, `created_at`, `total`): '
             .'add this one first, then drop `orders_customer_id_created_at_index` (dropping it first fails if a foreign key needs it, and leaves the table without an index on `customer_id`, `created_at` meanwhile); '
             .'with the primary key InnoDB appends, `orders_customer_id_created_at_index` also serves (`customer_id`, `created_at`, `id`) and the new index does not: '
             .'before dropping it, check that no query sorts or seeks on `id` right after `customer_id`, `created_at` (e.g. `ORDER BY created_at, id`)'."\n");

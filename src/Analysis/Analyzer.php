@@ -97,7 +97,7 @@ final class Analyzer
             $served = [];
 
             try {
-                foreach ($this->candidates($query->sql, $shape->sql, $plan, $driver, $unparsed, $query->connection) as [$access, $reference, $reasons, $candidate]) {
+                foreach ($this->candidates($query->sql, $shape->sql, $plan, $driver, $unparsed, $query->connection) as [$access, $reference, $reasons, $candidate, $selectivity]) {
                     $table = $reference->table;
                     $indexes = $driver->indexes($table);
                     $primaryKey = PrimaryKey::of($indexes, $driver->engine($table));
@@ -108,7 +108,7 @@ final class Analyzer
 
                     $key = $query->connection.'|'.$table.'|'.implode(',', $candidate->columns);
 
-                    $served[] = [$key, $reasons, $candidate, $suggestions[$key] ?? new Suggestion(
+                    $served[] = [$key, $access, $reasons, $candidate, $suggestions[$key] ?? new Suggestion(
                         connection: $query->connection,
                         table: $table,
                         columns: $candidate->columns,
@@ -120,6 +120,7 @@ final class Analyzer
                         plan: $plan,
                         order: $candidate->order,
                         primaryKey: $primaryKey,
+                        selectivity: $selectivity,
                     )];
                 }
             } catch (Throwable $e) {
@@ -128,11 +129,11 @@ final class Analyzer
                 continue;
             }
 
-            foreach ($served as [$key, $reasons, $candidate, $suggestion]) {
+            foreach ($served as [$key, $access, $reasons, $candidate, $suggestion]) {
                 $suggestions[$key] ??= $suggestion;
                 $suggestions[$key]->constrain($candidate->order);
                 $suggestions[$key]->flag($reasons, $candidate->note);
-                $suggestions[$key]->serve($query->sql, $query->count, $query->totalMs, $query->maxMs);
+                $suggestions[$key]->serve($query->sql, $query->count, $query->totalMs, $query->maxMs, $access, $plan);
             }
         }
 
@@ -214,11 +215,12 @@ final class Analyzer
     /**
      * The table accesses of a plan that show a missing-index symptom, each
      * with the table reference it reads, the symptoms, and the index it
-     * needs. Symptomatic accesses db-hound cannot turn into a candidate are
-     * added to `$unparsed`.
+     * needs, and how selective an equality on each of the table's columns is.
+     * Symptomatic accesses db-hound cannot turn into a candidate are added
+     * to `$unparsed`.
      *
      * @param  list<UnparsedQuery>  $unparsed
-     * @return list<array{TableAccess, TableColumns, list<string>, IndexCandidate}>
+     * @return list<array{TableAccess, TableColumns, list<string>, IndexCandidate, Selectivity}>
      */
     private function candidates(string $fingerprint, string $sql, Plan $plan, Driver $driver, array &$unparsed, string $connection): array
     {
@@ -345,7 +347,7 @@ final class Analyzer
                 continue;
             }
 
-            $candidates[] = [$access, $reference, $reasons, $candidate];
+            $candidates[] = [$access, $reference, $reasons, $candidate, $selectivity];
         }
 
         return $candidates;

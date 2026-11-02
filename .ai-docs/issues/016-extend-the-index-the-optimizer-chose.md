@@ -2,7 +2,7 @@
 title: Extend the index the optimizer actually used
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: done
 ---
 
 ## Parent
@@ -15,9 +15,9 @@ When several existing indexes are prefixes of a candidate, the "extend existing 
 
 ## Acceptance criteria
 
-- [ ] Unit: candidate with equality set `{merchant_id, is_approved}` and EXPLAIN key `branches_merchant_id_index` → extends `branches_merchant_id_index` with `merchant_id` first.
-- [ ] Unit: when EXPLAIN's key is not a prefix of the candidate, the longest prefix index is extended.
-- [ ] Report "Kind" line names the chosen index and why ("used by the current plan" / "longest prefix").
+- [x] Unit: candidate with equality set `{merchant_id, is_approved}` and EXPLAIN key `branches_merchant_id_index` → extends `branches_merchant_id_index` with `merchant_id` first.
+- [x] Unit: when EXPLAIN's key is not a prefix of the candidate, the longest prefix index is extended.
+- [x] Report "Kind" line names the chosen index and why ("used by the current plan" / "longest prefix").
 
 ## Blocked by
 

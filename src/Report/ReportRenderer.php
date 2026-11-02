@@ -119,7 +119,9 @@ final class ReportRenderer
             '- **Proposed index name:** `'.$suggestion->indexName().'`',
             '- **Kind:** '.($extends === null
                 ? 'new index'
-                : "extend existing index `{$extends->name}` ({$this->columns($extends->columns)}) to ({$columns}): "
+                : "extend existing index `{$extends->name}` ({$this->columns($extends->columns)})"
+                    .($suggestion->extendedBecause === null ? '' : ", chosen because it is {$suggestion->extendedBecause->value},")
+                    ." to ({$columns}): "
                     ."add this one first, then drop `{$extends->name}` (dropping it first fails if a foreign key needs it, "
                     ."and leaves the table without an index on {$this->columns($extends->columns)} meanwhile)"
                     .$this->lostOrder($suggestion)),
