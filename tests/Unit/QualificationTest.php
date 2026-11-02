@@ -2,10 +2,12 @@
 
 use Foodics\DbHound\Analysis\AnalysisResult;
 use Foodics\DbHound\Analysis\Analyzer;
+use Foodics\DbHound\Analysis\FingerprintOutcome;
 use Foodics\DbHound\Analysis\Plan;
 use Foodics\DbHound\Analysis\Qualification;
 use Foodics\DbHound\Analysis\TableAccess;
 use Foodics\DbHound\Capture\QueryAggregate;
+use Foodics\DbHound\Capture\Sample;
 use Foodics\DbHound\Contracts\Driver;
 use Illuminate\Encryption\Encrypter;
 
@@ -13,6 +15,8 @@ use Illuminate\Encryption\Encrypter;
  * A Driver that records the SQL of every EXPLAIN it runs and reports a full
  * scan of the first table the query reads. Every table has the columns
  * `status` and `branch_id`, and `$rows` rows unless listed in `$rowCounts`.
+ * EXPLAIN fails on a query reading `explain_fails`, and looking up the
+ * columns of `uninspectable` fails.
  *
  * @param  array<string, int>  $rowCounts  table => rows
  */
@@ -36,6 +40,10 @@ function scanningDriver(array $rowCounts = [], int $rows = 5000): Driver
 
             preg_match('/\bfrom\s+`?(?:\w+`?\.`?)?(\w+)`?/i', $sql, $m);
 
+            if ($m[1] === 'explain_fails') {
+                throw new RuntimeException('EXPLAIN failed');
+            }
+
             return new Plan([new TableAccess($m[1], 'ALL', null, 5000)]);
         }
 
@@ -56,6 +64,10 @@ function scanningDriver(array $rowCounts = [], int $rows = 5000): Driver
 
         public function columnTypes(string $table): array
         {
+            if ($table === 'uninspectable') {
+                throw new RuntimeException('lookup failed');
+            }
+
             return ['status' => 'varchar(20)', 'branch_id' => 'bigint unsigned'];
         }
 
@@ -363,4 +375,167 @@ it('matches ignored tables without the connection table prefix', function () {
     ], $driver, new Qualification(tablePrefixes: ['mysql' => 'app_']));
 
     expect($driver->explained)->toBe(['select * from `app_migrations` where `branch_id` = ?']);
+});
+
+it('accounts for a Fingerprint below the count or latency thresholds apart from the explained ones', function () {
+    $result = qualify([
+        fingerprint('select * from `orders` where `status` = ?'),
+        fingerprint('select * from `orders` where `branch_id` = ?', count: 1),
+    ], scanningDriver());
+
+    expect($result->accounting->of(FingerprintOutcome::Explained))->toBe(1)
+        ->and($result->accounting->of(FingerprintOutcome::BelowThresholds))->toBe(1);
+});
+
+it('accounts for a Fingerprint skipped by an ignore list, whatever its count and latency', function (string $sql) {
+    $result = qualify([fingerprint($sql, count: 1)], scanningDriver());
+
+    expect($result->accounting->of(FingerprintOutcome::IgnoreLists))->toBe(1)
+        ->and($result->accounting->of(FingerprintOutcome::BelowThresholds))->toBe(0);
+})->with([
+    'ignored table' => 'select * from `migrations` where `status` = ?',
+    'ignored statement' => 'show tables',
+    'ignored schema' => 'select * from `information_schema`.`tables` where `status` = ?',
+]);
+
+it('accounts for a Fingerprint that is not a SELECT, UPDATE or DELETE apart from the other skipped ones', function () {
+    $result = qualify([fingerprint('insert into `orders` (`status`) values (?)')], scanningDriver());
+
+    expect($result->accounting->of(FingerprintOutcome::NotExplainable))->toBe(1)
+        ->and($result->accounting->of(FingerprintOutcome::Other))->toBe(0);
+});
+
+it('accounts for a Fingerprint below the count or latency thresholds as such before parsing its statement', function () {
+    // Most stored Fingerprints are below the thresholds: they are told apart without the SQL tokenizer.
+    $result = qualify([fingerprint('insert into `orders` (`status`) values (?)', count: 1)], scanningDriver());
+
+    expect($result->accounting->of(FingerprintOutcome::BelowThresholds))->toBe(1)
+        ->and($result->accounting->of(FingerprintOutcome::NotExplainable))->toBe(0);
+});
+
+it('accounts for a qualifying Fingerprint the explain cap left out', function () {
+    $result = qualify([
+        fingerprint('select * from `orders` where `status` = ?', avgMs: 300.0),
+        fingerprint('select * from `orders` where `branch_id` = ?', avgMs: 200.0),
+        fingerprint('select * from `orders` where `branch_id` = ? and `status` = ?', avgMs: 100.0),
+    ], scanningDriver(), new Qualification(limit: 1));
+
+    expect($result->accounting->of(FingerprintOutcome::Explained))->toBe(1)
+        ->and($result->accounting->of(FingerprintOutcome::ExplainCap))->toBe(2);
+});
+
+it('accounts for a Fingerprint it could not EXPLAIN without a Sample', function () {
+    $result = qualify([fingerprint('select cast(`status` as char(?)) from `orders` where `branch_id` = ?')], scanningDriver());
+
+    expect($result->accounting->of(FingerprintOutcome::NoSample))->toBe(1)
+        ->and($result->accounting->of(FingerprintOutcome::Explained))->toBe(0);
+});
+
+it('accounts for a Fingerprint whose EXPLAIN failed apart from the explained ones', function () {
+    $result = qualify([fingerprint('select * from `explain_fails` where `status` = ?')], scanningDriver());
+
+    expect($result->accounting->of(FingerprintOutcome::ExplainFailed))->toBe(1)
+        ->and($result->accounting->of(FingerprintOutcome::Explained))->toBe(0);
+});
+
+it('accounts for a Fingerprint whose tables could not be inspected before EXPLAIN as other', function () {
+    $result = qualify([fingerprint('select * from `uninspectable` where `status` = ?')], scanningDriver());
+
+    expect($result->accounting->of(FingerprintOutcome::Other))->toBe(1)
+        ->and($result->accounting->of(FingerprintOutcome::ExplainCap))->toBe(0);
+});
+
+it('accounts for a Fingerprint whose tables could not be inspected after EXPLAIN as other', function () {
+    // With a Sample, EXPLAIN runs without a lookup: inspecting the plan's tables is what fails.
+    $query = fingerprint('select * from `uninspectable` where `status` = ?');
+    $query->sample = (new Sample($query->sql, ['paid']))->encrypt(new Encrypter(str_repeat('k', 32), 'aes-256-cbc'));
+    $driver = scanningDriver();
+
+    $result = qualify([$query], $driver);
+
+    expect($driver->explained)->toBe(['select * from `uninspectable` where `status` = ?'])
+        ->and($result->accounting->of(FingerprintOutcome::Other))->toBe(1)
+        ->and($result->accounting->of(FingerprintOutcome::Explained))->toBe(0)
+        ->and($result->explained)->toBe(0);
+});
+
+it('accounts for an explained Fingerprint whose symptoms are all on tables under the row threshold as skipped by it', function (string $sql) {
+    $result = qualify([
+        fingerprint($sql),
+        fingerprint('select * from `orders` where `status` = ?'),
+    ], scanningDriver(['statuses' => 999]));
+
+    expect($result->accounting->of(FingerprintOutcome::RowThreshold))->toBe(1)
+        ->and($result->accounting->of(FingerprintOutcome::Explained))->toBe(1);
+})->with([
+    'indexable predicate' => 'select * from `statuses` where `status` = ?',
+    'no indexable predicate' => 'select * from `statuses` where `status` = ? or `branch_id` = ?',
+    'several references' => 'select * from `statuses` where `id` in (select `id` from `statuses` where `status` = ?)',
+]);
+
+it('accounts for an explained Fingerprint with a symptom on a table over the row threshold as explained, even when another one is under it', function () {
+    $sql = 'select `orders`.`total`, `lookups`.`name` from `orders` cross join `lookups`';
+
+    $result = analyzeWithCardinality(
+        [$sql => new Plan([new TableAccess('lookups', 'ALL', null, 10), new TableAccess('orders', 'ALL', null, 5_000_000)])],
+        [
+            'orders' => ['rows' => 5_000_000, 'columns' => ['id' => 'bigint unsigned', 'total' => 'decimal(10,2)']],
+            'lookups' => ['rows' => 10, 'columns' => ['id' => 'bigint unsigned', 'name' => 'varchar(50)']],
+        ],
+        new Analyzer(new Encrypter(str_repeat('k', 32), 'aes-256-cbc'), qualification: new Qualification(minCount: 1, minAvgMs: 0.0, minMaxMs: 0.0)),
+    );
+
+    expect($result->accounting->of(FingerprintOutcome::Explained))->toBe(1)
+        ->and($result->accounting->of(FingerprintOutcome::RowThreshold))->toBe(0);
+});
+
+it('accounts for every Fingerprint it was given exactly once, whatever became of it', function () {
+    $queries = [
+        fingerprint('select * from `orders` where `status` = ?', avgMs: 900.0),
+        fingerprint('select * from `orders` where `branch_id` = ?', avgMs: 800.0),
+        fingerprint('select * from `statuses` where `status` = ?', avgMs: 700.0),
+        fingerprint('select * from `explain_fails` where `status` = ?', avgMs: 600.0),
+        fingerprint('select cast(`status` as char(?)) from `orders` where `branch_id` = ?', avgMs: 500.0),
+        fingerprint('select * from `uninspectable` where `status` = ?', avgMs: 400.0),
+        fingerprint('select * from `orders` where `branch_id` = ? and `status` = ?', avgMs: 60.0),
+        fingerprint('select * from `orders` where `status` = ? limit 1', count: 2),
+        fingerprint('select * from `sessions` where `status` = ?'),
+        fingerprint('show tables'),
+        fingerprint('insert into `orders` (`status`) values (?)'),
+    ];
+
+    $result = qualify($queries, scanningDriver(['statuses' => 10]), new Qualification(limit: 6));
+
+    expect($result->accounting->counts())->toBe([
+        'explained' => 2,
+        'skipped by row threshold' => 1,
+        'EXPLAIN failed' => 1,
+        'no Sample available' => 1,
+        'skipped by the explain cap' => 1,
+        'below count/latency thresholds' => 1,
+        'skipped by ignore lists' => 2,
+        'not a SELECT, UPDATE or DELETE' => 1,
+        'other' => 1,
+    ])
+        ->and($result->accounting->total())->toBe(count($queries))
+        ->and($result->explained)->toBe(2);
+});
+
+it('has no relaxed thresholds at the package defaults, or stricter ones', function () {
+    expect((new Qualification)->relaxed())->toBe([])
+        ->and(Qualification::fromConfig([])->relaxed())->toBe([])
+        ->and((new Qualification(minCount: 50, minAvgMs: 100.0, minMaxMs: 1000.0, limit: 10, minTableRows: 50_000))->relaxed())->toBe([]);
+});
+
+it('names each threshold looser than the package default, with its value and the default', function () {
+    expect((new Qualification(minCount: 1, minAvgMs: 0.0, minMaxMs: 0.0, minTableRows: 0))->relaxed())->toBe([
+        'Fingerprint count' => ['≥ 1', '≥ 10'],
+        'Fingerprint average latency' => ['≥ 0 ms', '≥ 50 ms'],
+        'Fingerprint max latency' => ['≥ 0 ms', '≥ 500 ms'],
+        'Table rows' => ['≥ 0', '≥ 1,000'],
+    ])
+        ->and((new Qualification(minMaxMs: 250.0, minTableRows: 999))->relaxed())->toBe([
+            'Fingerprint max latency' => ['≥ 250 ms', '≥ 500 ms'],
+            'Table rows' => ['≥ 999', '≥ 1,000'],
+        ]);
 });

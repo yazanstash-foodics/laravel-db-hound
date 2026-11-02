@@ -1,6 +1,8 @@
 <?php
 
 use Foodics\DbHound\Analysis\AnalysisResult;
+use Foodics\DbHound\Analysis\FingerprintAccounting;
+use Foodics\DbHound\Analysis\FingerprintOutcome;
 use Foodics\DbHound\Analysis\Index;
 use Foodics\DbHound\Analysis\Plan;
 use Foodics\DbHound\Analysis\Suggestion;
@@ -31,6 +33,7 @@ it('renders the header, the summary, each table with its context and Suggestions
     $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult(
         [$suggestion],
         [new UnparsedQuery('mysql', 'select * from `orders` where `status` = ? or `total` > ?', 'full scan, but predicate columns could not be extracted')],
+        FingerprintAccounting::tally([FingerprintOutcome::Explained, FingerprintOutcome::Explained, FingerprintOutcome::Explained, FingerprintOutcome::BelowThresholds]),
     ));
 
     expect($markdown)->toBe(<<<'MD'
@@ -40,7 +43,8 @@ it('renders the header, the summary, each table with its context and Suggestions
 - **Connections:** mysql
 - **Capture coverage:** 2026-10-02 08:15:00 UTC → 2026-11-01 09:59:00 UTC
 - **Fingerprints analyzed:** 4 (1250 captured queries)
-- **Fingerprints explained:** 0
+- **Fingerprints explained:** 3
+- **Fingerprint accounting:** 3 explained + 1 below count/latency thresholds = 4 analyzed
 - **Thresholds:** none
 - **Suggestions:** 1
 - **Unparsed queries:** 1
@@ -229,11 +233,14 @@ it('lists the thresholds used and how many Fingerprints qualified for EXPLAIN in
         ],
     );
 
-    $markdown = (new ReportRenderer)->render($context, new AnalysisResult([], [], explained: 3));
+    $markdown = (new ReportRenderer)->render($context, new AnalysisResult([], [], FingerprintAccounting::tally([
+        FingerprintOutcome::Explained, FingerprintOutcome::Explained, FingerprintOutcome::Explained, FingerprintOutcome::BelowThresholds,
+    ])));
 
     expect($markdown)->toContain(<<<'MD'
 - **Fingerprints analyzed:** 4 (1250 captured queries)
 - **Fingerprints explained:** 3
+- **Fingerprint accounting:** 3 explained + 1 below count/latency thresholds = 4 analyzed
 - **Thresholds:**
   - Fingerprint count: ≥ 10
   - Fingerprint latency: avg ≥ 50 ms or max ≥ 500 ms
@@ -366,4 +373,70 @@ MD)
             '## `orders` (reporting)',
             '## Unparsed queries',
         ]);
+});
+
+it('accounts for the analyzed Fingerprints by outcome, leaving out the outcomes none had', function () {
+    $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult([], [], FingerprintAccounting::tally([
+        FingerprintOutcome::Explained,
+        FingerprintOutcome::RowThreshold,
+        FingerprintOutcome::ExplainFailed,
+        FingerprintOutcome::NoSample,
+        FingerprintOutcome::ExplainCap,
+        FingerprintOutcome::BelowThresholds,
+        FingerprintOutcome::IgnoreLists,
+        FingerprintOutcome::IgnoreLists,
+        FingerprintOutcome::NotExplainable,
+        FingerprintOutcome::Other,
+    ])));
+
+    expect($markdown)->toContain(
+        '- **Fingerprint accounting:** 1 explained + 1 skipped by row threshold + 1 EXPLAIN failed + 1 no Sample available'
+        .' + 1 skipped by the explain cap + 1 below count/latency thresholds + 2 skipped by ignore lists'
+        ." + 1 not a SELECT, UPDATE or DELETE + 1 other = 10 analyzed\n"
+    );
+});
+
+it('accounts for no Fingerprints when there were none to analyze', function () {
+    $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult([], []));
+
+    expect($markdown)->toContain("- **Fingerprint accounting:** none\n");
+});
+
+it('warns at the top when thresholds were relaxed, naming each one next to its default', function () {
+    $context = new ReportContext(
+        generatedAt: Carbon::parse('2026-11-01 10:00:00', 'UTC'),
+        connections: ['mysql'],
+        firstSeen: null,
+        lastSeen: null,
+        fingerprints: 0,
+        queries: 0,
+        thresholds: [],
+        relaxed: [
+            'Fingerprint count' => ['≥ 1', '≥ 10'],
+            'Table rows' => ['≥ 0', '≥ 1,000'],
+        ],
+    );
+
+    $markdown = (new ReportRenderer)->render($context, new AnalysisResult([], []));
+
+    expect($markdown)->toStartWith(<<<'MD'
+# db-hound Report
+
+> **Warning: relaxed thresholds.** These thresholds are looser than the package defaults:
+>
+> - Fingerprint count: ≥ 1 (default ≥ 10)
+> - Table rows: ≥ 0 (default ≥ 1,000)
+>
+> Suggestions on small tables are likely noise: MySQL scans a small table whatever its indexes. Rare or fast Fingerprints cost little even unindexed.
+
+- **Generated at:** 2026-11-01 10:00:00 UTC
+
+MD);
+});
+
+it('prints no warning when no threshold was relaxed', function () {
+    $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult([], []));
+
+    expect($markdown)->toStartWith("# db-hound Report\n\n- **Generated at:**")
+        ->not->toContain('Warning');
 });

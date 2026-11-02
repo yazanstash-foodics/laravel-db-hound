@@ -187,12 +187,14 @@ it('documents every field of the Report', function () {
         fingerprints: 4,
         queries: 1250,
         thresholds: everyFingerprint()->describe(),
+        relaxed: everyFingerprint()->relaxed(),
     ), new AnalysisResult([$suggestion], [new UnparsedQuery('mysql', 'select 1', 'unparseable')]));
 
     preg_match_all('/^#{2,3} ([A-Z][a-z][^\n]*)$/m', $markdown, $sections);
     preg_match_all('/^- \*\*([^*]+):\*\*/m', $markdown, $fields);
     preg_match_all('/^\*\*([^*`(]+?)\s*(?:`|\(|\*\*)/m', $markdown, $blocks);
     preg_match_all('/^  - ([^:]+):/m', $markdown, $thresholds);
+    preg_match_all('/^> \*\*([^*]+)\*\*/m', $markdown, $warnings);
     preg_match('/^\| Rank \|.*$/m', $markdown, $summary);
     $summaryColumns = array_map('trim', explode('|', trim($summary[0] ?? '', '| ')));
 
@@ -203,6 +205,7 @@ it('documents every field of the Report', function () {
         // Block headings end with the table or a count: `Existing indexes on `orders``, `Served Fingerprints (2)`.
         ...array_map(fn (string $label) => "**{$label}", $blocks[1]),
         ...$thresholds[1],
+        ...array_map(fn (string $warning) => "**{$warning}**", $warnings[1]),
         ...array_map(fn (string $column) => "| **{$column}** |", $summaryColumns),
     ], fn (string $text) => ! str_contains($documentation, $text)));
 
@@ -211,5 +214,6 @@ it('documents every field of the Report', function () {
         ->and($summaryColumns)->toContain('Rank', 'Kind', 'Fingerprints served')
         ->and($blocks[1])->toContain('EXPLAIN summary', 'Existing indexes on', 'Served Fingerprints')
         ->and($thresholds[1])->toContain('Fingerprint count')
+        ->and($warnings[1])->toBe(['Warning: relaxed thresholds.'])
         ->and($undocumented)->toBe([]);
 });

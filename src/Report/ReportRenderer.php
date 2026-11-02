@@ -4,6 +4,7 @@ namespace Foodics\DbHound\Report;
 
 use DateTimeInterface;
 use Foodics\DbHound\Analysis\AnalysisResult;
+use Foodics\DbHound\Analysis\FingerprintAccounting;
 use Foodics\DbHound\Analysis\Index;
 use Foodics\DbHound\Analysis\Suggestion;
 
@@ -20,6 +21,7 @@ final class ReportRenderer
         $lines = [
             '# db-hound Report',
             '',
+            ...$this->warning($context->relaxed),
             ...$this->header($context, $result),
             '',
             ...$this->summary($result->suggestions),
@@ -49,6 +51,33 @@ final class ReportRenderer
     }
 
     /**
+     * A warning that the thresholds let in noise, naming each relaxed one
+     * next to its default, or nothing when none was relaxed.
+     *
+     * @param  array<string, array{string, string}>  $relaxed  label => [value, default]
+     * @return list<string>
+     */
+    private function warning(array $relaxed): array
+    {
+        if ($relaxed === []) {
+            return [];
+        }
+
+        return [
+            '> **Warning: relaxed thresholds.** These thresholds are looser than the package defaults:',
+            '>',
+            ...array_map(
+                fn (string $label, array $values) => "> - {$label}: {$values[0]} (default {$values[1]})",
+                array_keys($relaxed),
+                $relaxed,
+            ),
+            '>',
+            '> Suggestions on small tables are likely noise: MySQL scans a small table whatever its indexes. Rare or fast Fingerprints cost little even unindexed.',
+            '',
+        ];
+    }
+
+    /**
      * @return list<string>
      */
     private function header(ReportContext $context, AnalysisResult $result): array
@@ -71,10 +100,30 @@ final class ReportRenderer
             '- **Capture coverage:** '.$coverage,
             "- **Fingerprints analyzed:** {$context->fingerprints} ({$context->queries} captured queries)",
             "- **Fingerprints explained:** {$result->explained}",
+            '- **Fingerprint accounting:** '.$this->accounting($result->accounting),
             ...$thresholds,
             '- **Suggestions:** '.count($result->suggestions),
             '- **Unparsed queries:** '.count($result->unparsed),
         ];
+    }
+
+    /**
+     * Every analyzed Fingerprint by what became of it, the outcomes none had
+     * left out, summed to the analyzed total.
+     */
+    private function accounting(FingerprintAccounting $accounting): string
+    {
+        $outcomes = array_filter($accounting->counts());
+
+        if ($outcomes === []) {
+            return 'none';
+        }
+
+        return implode(' + ', array_map(
+            fn (string $outcome, int $fingerprints) => "{$fingerprints} {$outcome}",
+            array_keys($outcomes),
+            $outcomes,
+        )).' = '.$accounting->total().' analyzed';
     }
 
     /**

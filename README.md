@@ -257,6 +257,7 @@ The Report is Markdown with a fixed structure. It contains only normalized SQL (
 - **Capture coverage:** 2026-10-02 08:15:00 UTC → 2026-11-01 09:59:00 UTC
 - **Fingerprints analyzed:** 412 (1834520 captured queries)
 - **Fingerprints explained:** 57
+- **Fingerprint accounting:** 57 explained + 4 skipped by row threshold + 1 no Sample available + 12 skipped by the explain cap + 301 below count/latency thresholds + 9 skipped by ignore lists + 28 not a SELECT, UPDATE or DELETE = 412 analyzed
 - **Thresholds:**
   - Fingerprint count: ≥ 10
   - …
@@ -270,10 +271,26 @@ The Report is Markdown with a fixed structure. It contains only normalized SQL (
 | **Connections** | The captured connections, with the analysis connection when it is mapped to another one (`mysql (analyzed on mysql_replica)`). |
 | **Capture coverage** | Earliest first-seen to latest last-seen time across all stored Fingerprints, or `no captured queries`. |
 | **Fingerprints analyzed** | Fingerprints in `db_hound_queries`, and the total number of queries they represent. Captured queries are sampled, so multiply by 1 / `sample_rate` for an estimate of the real traffic. |
-| **Fingerprints explained** | How many qualifying Fingerprints were explained. |
+| **Fingerprints explained** | How many qualifying Fingerprints were explained and looked at for Suggestions (the `explained` outcome below). |
+| **Fingerprint accounting** | What became of every analyzed Fingerprint, one outcome each, summed to **Fingerprints analyzed**; outcomes no Fingerprint had are left out. `explained`: `EXPLAIN` ran and its plan was looked at for Suggestions. `skipped by row threshold`: `EXPLAIN` ran, but every table it flagged is under the Table rows threshold. `EXPLAIN failed`: listed under "Unparsed queries". `no Sample available`: the Fingerprint can be explained only with a Sample and has none (also listed under "Unparsed queries"). `skipped by the explain cap`: qualified, but past the Fingerprints explained cap. `below count/latency thresholds`, `skipped by ignore lists` (ignored tables, statements or schemas), `not a SELECT, UPDATE or DELETE`: never explained. `other`: looking up its tables (their columns, indexes or row counts) failed, before or after `EXPLAIN` (listed under "Unparsed queries"). |
 | **Thresholds** | The qualification settings used: Fingerprint count, Fingerprint latency, Fingerprints explained, Table rows, Ignored tables, Ignored statements, Ignored schemas. |
 | **Suggestions** | Number of Suggestions below. |
 | **Unparsed queries** | Number of entries in the "Unparsed queries" section. |
+
+When any qualification threshold (Fingerprint count, average or max latency, Table rows) is looser than the package default, a warning opens the Report, above the header, naming each relaxed threshold next to its default:
+
+```markdown
+# db-hound Report
+
+> **Warning: relaxed thresholds.** These thresholds are looser than the package defaults:
+>
+> - Fingerprint count: ≥ 1 (default ≥ 10)
+> - Table rows: ≥ 0 (default ≥ 1,000)
+>
+> Suggestions on small tables are likely noise: MySQL scans a small table whatever its indexes. Rare or fast Fingerprints cost little even unindexed.
+```
+
+A coding agent reading such a Report should treat Suggestions on tables with few rows, or serving rare or fast Fingerprints, as noise unless the engineer says otherwise. With the default thresholds there is no warning.
 
 ### Summary
 

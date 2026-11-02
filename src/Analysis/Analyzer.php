@@ -53,9 +53,26 @@ final class Analyzer
         $suggestions = [];
         $unparsed = [];
         $resolved = [];
-        $explained = 0;
 
-        foreach ($this->qualification->select($queries) as $query) {
+        /** @var array<int, FingerprintOutcome> $outcomes  object id => outcome */
+        $outcomes = [];
+        $qualifying = [];
+
+        // Each Fingerprint is qualified once: a qualifying one the explain cap leaves out is accounted for as such.
+        foreach ($queries as $query) {
+            $skip = $this->qualification->skip($query);
+            $outcomes[spl_object_id($query)] = $skip ?? FingerprintOutcome::ExplainCap;
+
+            if ($skip === null) {
+                $qualifying[] = $query;
+            }
+        }
+
+        $selected = $this->qualification->top($qualifying);
+
+        foreach ($selected as $query) {
+            $outcomes[spl_object_id($query)] = FingerprintOutcome::Other;
+
             // Schema metadata is looked up once per table for the whole run.
             $driver = $resolved[$query->connection] ??= new RunScopedDriver($drivers instanceof Driver ? $drivers : $drivers($query->connection));
 
@@ -77,27 +94,37 @@ final class Analyzer
             }
 
             if ($statement === null) {
+                $outcomes[spl_object_id($query)] = FingerprintOutcome::NoSample;
                 $unparsed[] = new UnparsedQuery($query->connection, $query->sql, self::REASON_NEEDS_SAMPLE);
 
                 continue;
             }
 
-            $explained++;
-
             try {
                 $plan = $driver->explain($statement->sql, $statement->bindings);
             } catch (Throwable $e) {
+                $outcomes[spl_object_id($query)] = FingerprintOutcome::ExplainFailed;
                 $unparsed[] = new UnparsedQuery($query->connection, $query->sql, self::failure('EXPLAIN', $e));
 
                 continue;
             }
 
+            $outcomes[spl_object_id($query)] = FingerprintOutcome::Explained;
+
             // Every table is inspected before the Fingerprint serves any Suggestion,
             // so a failed lookup leaves no Suggestion half-served.
             $served = [];
+            $small = false;
 
             try {
-                foreach ($this->candidates($query->sql, $shape->sql, $plan, $driver, $unparsed, $query->connection) as [$access, $reference, $reasons, $candidate, $selectivity]) {
+                $candidates = $this->candidates($query->sql, $shape->sql, $plan, $driver, $unparsed, $query->connection, $small);
+
+                // Every symptom of its plan is on a table too small to index.
+                if ($small) {
+                    $outcomes[spl_object_id($query)] = FingerprintOutcome::RowThreshold;
+                }
+
+                foreach ($candidates as [$access, $reference, $reasons, $candidate, $selectivity]) {
                     $table = $reference->table;
                     $indexes = $driver->indexes($table);
                     $primaryKey = PrimaryKey::of($indexes, $driver->engine($table));
@@ -124,6 +151,7 @@ final class Analyzer
                     )];
                 }
             } catch (Throwable $e) {
+                $outcomes[spl_object_id($query)] = FingerprintOutcome::Other;
                 $unparsed[] = new UnparsedQuery($query->connection, $query->sql, self::failure('inspecting its tables', $e));
 
                 continue;
@@ -152,7 +180,7 @@ final class Analyzer
             }
         }
 
-        return new AnalysisResult($ranked, self::distinct($unparsed), $explained);
+        return new AnalysisResult($ranked, self::distinct($unparsed), FingerprintAccounting::tally(array_values($outcomes)));
     }
 
     /**
@@ -235,12 +263,13 @@ final class Analyzer
      * with the table reference it reads, the symptoms, and the index it
      * needs, and how selective an equality on each of the table's columns is.
      * Symptomatic accesses db-hound cannot turn into a candidate are added
-     * to `$unparsed`.
+     * to `$unparsed`; `$small` is set when every symptomatic access was left
+     * out because its table is under the row threshold.
      *
      * @param  list<UnparsedQuery>  $unparsed
      * @return list<array{TableAccess, TableColumns, list<string>, IndexCandidate, Selectivity}>
      */
-    private function candidates(string $fingerprint, string $sql, Plan $plan, Driver $driver, array &$unparsed, string $connection): array
+    private function candidates(string $fingerprint, string $sql, Plan $plan, Driver $driver, array &$unparsed, string $connection, bool &$small = false): array
     {
         $symptoms = [];
 
@@ -281,6 +310,9 @@ final class Analyzer
         }
 
         $candidates = [];
+        // Whether a symptomatic access was left out for its table being too small, and whether another one was looked at.
+        $skippedSmall = false;
+        $looked = false;
         // Tables inside a materialized subquery or derived table are read apart from the join around it.
         $readBefore = [];
         $driving = $this->driving($plan);
@@ -300,14 +332,23 @@ final class Analyzer
             $references = $extracted->named($access->table, $access->within, $materialized, $access->selectList);
 
             if (count($references) !== 1) {
-                if ($reasons !== [] && ($references === [] || ! $this->allSmall($references, $driver))) {
-                    $unparsed[] = new UnparsedQuery($connection, $fingerprint, sprintf(
-                        '%s on `%s`, but %s',
-                        implode(', ', $reasons),
-                        $access->table,
-                        $references === [] ? 'the query has no such table' : 'several table references have that name',
-                    ));
+                if ($reasons === []) {
+                    continue;
                 }
+
+                if ($references !== [] && $this->allSmall($references, $driver)) {
+                    $skippedSmall = true;
+
+                    continue;
+                }
+
+                $looked = true;
+                $unparsed[] = new UnparsedQuery($connection, $fingerprint, sprintf(
+                    '%s on `%s`, but %s',
+                    implode(', ', $reasons),
+                    $access->table,
+                    $references === [] ? 'the query has no such table' : 'several table references have that name',
+                ));
 
                 continue;
             }
@@ -326,6 +367,14 @@ final class Analyzer
                 continue;
             }
 
+            if ($this->allSmall([$reference], $driver)) {
+                $skippedSmall = true;
+
+                continue;
+            }
+
+            $looked = true;
+
             // The Driver inspects the connection's default database: another one's table would be looked up in the wrong schema.
             if ($reference->database !== null) {
                 $unparsed[] = new UnparsedQuery($connection, $fingerprint, sprintf(
@@ -335,10 +384,6 @@ final class Analyzer
                     $reference->database,
                 ));
 
-                continue;
-            }
-
-            if ($this->allSmall([$reference], $driver)) {
                 continue;
             }
 
@@ -374,6 +419,8 @@ final class Analyzer
 
             $candidates[] = [$access, $reference, $reasons, $candidate, $selectivity];
         }
+
+        $small = $skippedSmall && ! $looked;
 
         return $candidates;
     }

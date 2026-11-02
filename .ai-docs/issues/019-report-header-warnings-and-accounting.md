@@ -2,7 +2,7 @@
 title: Report header warns on relaxed thresholds and accounts for every Fingerprint
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: done
 ---
 
 ## Parent
@@ -18,9 +18,9 @@ The staging run used count ≥ 1, latency ≥ 0 ms and table rows ≥ 0, so ever
 
 ## Acceptance criteria
 
-- [ ] With default thresholds no warning is printed; with any relaxed threshold the warning lists each relaxed value next to its default.
-- [ ] The accounting buckets always sum to "Fingerprints analyzed" (unit test with a mix of skip reasons).
-- [ ] Integration test covers the warning and the accounting in a generated Report.
+- [x] With default thresholds no warning is printed; with any relaxed threshold the warning lists each relaxed value next to its default.
+- [x] The accounting buckets always sum to "Fingerprints analyzed" (unit test with a mix of skip reasons).
+- [x] Integration test covers the warning and the accounting in a generated Report.
 
 ## Blocked by
 

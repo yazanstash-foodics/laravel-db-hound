@@ -20,6 +20,16 @@ final readonly class Qualification
 
     public const IGNORED_SCHEMAS = ['information_schema', 'performance_schema'];
 
+    public const MIN_COUNT = 10;
+
+    public const MIN_AVG_MS = 50.0;
+
+    public const MIN_MAX_MS = 500.0;
+
+    public const LIMIT = 200;
+
+    public const MIN_TABLE_ROWS = 1000;
+
     private CapturePolicy $tables;
 
     /**
@@ -30,14 +40,14 @@ final readonly class Qualification
      * @param  array<string, string>  $tablePrefixes  connection => its table prefix
      */
     public function __construct(
-        public int $minCount = 10,
-        public float $minAvgMs = 50.0,
-        public float $minMaxMs = 500.0,
+        public int $minCount = self::MIN_COUNT,
+        public float $minAvgMs = self::MIN_AVG_MS,
+        public float $minMaxMs = self::MIN_MAX_MS,
         public array $ignoredTables = self::IGNORED_TABLES,
         public array $ignoredStatements = self::IGNORED_STATEMENTS,
         public array $ignoredSchemas = self::IGNORED_SCHEMAS,
-        public int $limit = 200,
-        public int $minTableRows = 1000,
+        public int $limit = self::LIMIT,
+        public int $minTableRows = self::MIN_TABLE_ROWS,
         public array $tablePrefixes = [],
     ) {
         $this->tables = new CapturePolicy(deniedTables: $ignoredTables);
@@ -52,14 +62,14 @@ final readonly class Qualification
         $ignore = (array) ($config['ignore'] ?? []);
 
         return new self(
-            minCount: (int) ($config['min_count'] ?? 10),
-            minAvgMs: (float) ($config['min_avg_ms'] ?? 50.0),
-            minMaxMs: (float) ($config['min_max_ms'] ?? 500.0),
+            minCount: (int) ($config['min_count'] ?? self::MIN_COUNT),
+            minAvgMs: (float) ($config['min_avg_ms'] ?? self::MIN_AVG_MS),
+            minMaxMs: (float) ($config['min_max_ms'] ?? self::MIN_MAX_MS),
             ignoredTables: self::names($ignore['tables'] ?? self::IGNORED_TABLES),
             ignoredStatements: self::names($ignore['statements'] ?? self::IGNORED_STATEMENTS),
             ignoredSchemas: self::names($ignore['schemas'] ?? self::IGNORED_SCHEMAS),
-            limit: (int) ($config['max_fingerprints'] ?? 200),
-            minTableRows: (int) ($config['min_table_rows'] ?? 1000),
+            limit: (int) ($config['max_fingerprints'] ?? self::LIMIT),
+            minTableRows: (int) ($config['min_table_rows'] ?? self::MIN_TABLE_ROWS),
             tablePrefixes: $tablePrefixes,
         );
     }
@@ -83,6 +93,23 @@ final readonly class Qualification
     }
 
     /**
+     * The thresholds looser than the package defaults, each with its value
+     * and the default: relaxed, they let in Fingerprints and tables too rare,
+     * fast or small for an index to matter.
+     *
+     * @return array<string, array{string, string}> label => [value, default]
+     */
+    public function relaxed(): array
+    {
+        return array_filter([
+            'Fingerprint count' => $this->minCount < self::MIN_COUNT ? ['≥ '.$this->minCount, '≥ '.self::MIN_COUNT] : null,
+            'Fingerprint average latency' => $this->minAvgMs < self::MIN_AVG_MS ? ["≥ {$this->minAvgMs} ms", '≥ '.self::MIN_AVG_MS.' ms'] : null,
+            'Fingerprint max latency' => $this->minMaxMs < self::MIN_MAX_MS ? ["≥ {$this->minMaxMs} ms", '≥ '.self::MIN_MAX_MS.' ms'] : null,
+            'Table rows' => $this->minTableRows < self::MIN_TABLE_ROWS ? ['≥ '.number_format($this->minTableRows), '≥ '.number_format(self::MIN_TABLE_ROWS)] : null,
+        ]);
+    }
+
+    /**
      * The Fingerprints worth explaining: the `limit` with the most impact
      * (count × avg ms) among those frequent and slow enough, explainable,
      * and not ignored. Highest impact first.
@@ -92,18 +119,39 @@ final readonly class Qualification
      */
     public function select(array $queries): array
     {
-        $qualifying = array_filter(
-            $queries,
-            fn (QueryAggregate $query) => $this->isFrequentAndSlow($query)
-                && ! $this->isIgnoredStatement($query->sql)
-                && ! $this->readsIgnoredSchema($query->sql)
-                && $this->touchesNoIgnoredTable($query)
-                && ExplainableQuery::from($query->sql) !== null,
-        );
+        return $this->top(array_values(array_filter($queries, fn (QueryAggregate $query) => $this->skip($query) === null)));
+    }
 
+    /**
+     * The `limit` with the most impact (count × avg ms) among Fingerprints
+     * that qualify (skip() is null for each), highest impact first.
+     *
+     * @param  list<QueryAggregate>  $qualifying
+     * @return list<QueryAggregate>
+     */
+    public function top(array $qualifying): array
+    {
         usort($qualifying, fn (QueryAggregate $a, QueryAggregate $b) => $b->totalMs <=> $a->totalMs);
 
         return array_slice($qualifying, 0, max(0, $this->limit));
+    }
+
+    /**
+     * Why the Fingerprint is not explained whatever the other Fingerprints,
+     * or null when it qualifies. The ignore lists come first, whatever its
+     * count and latency; the SQL tokenizer runs last, only on Fingerprints
+     * frequent and slow enough.
+     */
+    public function skip(QueryAggregate $query): ?FingerprintOutcome
+    {
+        return match (true) {
+            $this->isIgnoredStatement($query->sql),
+            $this->readsIgnoredSchema($query->sql),
+            ! $this->touchesNoIgnoredTable($query) => FingerprintOutcome::IgnoreLists,
+            ! $this->isFrequentAndSlow($query) => FingerprintOutcome::BelowThresholds,
+            ExplainableQuery::from($query->sql) === null => FingerprintOutcome::NotExplainable,
+            default => null,
+        };
     }
 
     /**
