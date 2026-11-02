@@ -29,6 +29,11 @@ interface Driver
     public function indexes(string $table): array;
 
     /**
+     * The table's storage engine (e.g. `InnoDB`), '' when it has none (a view).
+     */
+    public function engine(string $table): string;
+
+    /**
      * Estimated number of rows in the table.
      */
     public function rowCount(string $table): int;

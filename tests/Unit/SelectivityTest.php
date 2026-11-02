@@ -331,6 +331,11 @@ it('looks up each table\'s metadata once per run, however many Fingerprints read
             return $this->count(__FUNCTION__, $table, fn () => $this->inner->indexes($table));
         }
 
+        public function engine(string $table): string
+        {
+            return $this->count(__FUNCTION__, $table, fn () => $this->inner->engine($table));
+        }
+
         public function rowCount(string $table): int
         {
             return $this->count(__FUNCTION__, $table, fn () => $this->inner->rowCount($table));

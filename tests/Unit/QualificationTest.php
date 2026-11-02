@@ -44,6 +44,11 @@ function scanningDriver(array $rowCounts = [], int $rows = 5000): Driver
             return [];
         }
 
+        public function engine(string $table): string
+        {
+            return 'InnoDB';
+        }
+
         public function rowCount(string $table): int
         {
             return $this->rowCounts[$table] ?? $this->rows;

@@ -21,6 +21,7 @@ afterEach(function () {
     Schema::dropIfExists('hound_notes');
     Schema::dropIfExists('hound_growing');
     Schema::dropIfExists('hound_cardinality');
+    Schema::dropIfExists('hound_myisam_notes');
 });
 
 it('detects a full scan when the server defaults to EXPLAIN JSON format version 2', function () {
@@ -112,6 +113,19 @@ it('estimates distinct values from the statistics of the B-tree indexes a column
         ->and($cardinality['merchant_id'])->toBeGreaterThanOrEqual(30)->toBeLessThanOrEqual(50)
         ->and($cardinality['status'])->toBeLessThanOrEqual(3)
         ->and($cardinality['is_main'])->toBe(1);
+});
+
+it('reports each table\'s storage engine', function () {
+    Schema::create('hound_myisam_notes', function (Blueprint $table) {
+        $table->engine = 'MyISAM';
+        $table->id();
+    });
+
+    $driver = new MySqlDriver(DB::connection());
+
+    expect($driver->engine('hound_notes'))->toBe('InnoDB')
+        ->and($driver->engine('hound_myisam_notes'))->toBe('MyISAM')
+        ->and($driver->engine('hound_missing'))->toBe('');
 });
 
 it('never sends a statement that is not a SELECT to EXPLAIN', function (string $sql, array $bindings) {

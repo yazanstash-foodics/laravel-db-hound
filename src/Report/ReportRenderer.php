@@ -82,6 +82,26 @@ final class ReportRenderer
     }
 
     /**
+     * The Kind's warning that dropping the extended index loses the order
+     * the primary key InnoDB appends to it gives it, if it does.
+     */
+    private function lostOrder(Suggestion $suggestion): string
+    {
+        $held = $suggestion->lostOrder();
+
+        if ($held === null || $suggestion->extends === null) {
+            return '';
+        }
+
+        $old = $suggestion->extends->columns;
+        $key = array_slice($held, count($old));
+
+        return "; with the primary key InnoDB appends, `{$suggestion->extends->name}` also serves ({$this->columns($held)}) and the new index does not: "
+            ."before dropping it, check that no query sorts or seeks on {$this->columns($key)} right after {$this->columns($old)} "
+            .'(e.g. `ORDER BY '.implode(', ', [end($old), ...$key]).'`)';
+    }
+
+    /**
      * @return list<string>
      */
     private function suggestion(int $position, Suggestion $suggestion): array
@@ -101,7 +121,8 @@ final class ReportRenderer
                 ? 'new index'
                 : "extend existing index `{$extends->name}` ({$this->columns($extends->columns)}) to ({$columns}): "
                     ."add this one first, then drop `{$extends->name}` (dropping it first fails if a foreign key needs it, "
-                    ."and leaves the table without an index on {$this->columns($extends->columns)} meanwhile)"),
+                    ."and leaves the table without an index on {$this->columns($extends->columns)} meanwhile)"
+                    .$this->lostOrder($suggestion)),
             '- **Reasons:** '.implode(', ', $suggestion->reasons),
             ...array_map(fn (string $note) => '- **Note:** '.$note, $suggestion->notes),
             '',

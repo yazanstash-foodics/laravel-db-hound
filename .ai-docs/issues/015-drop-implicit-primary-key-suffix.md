@@ -2,7 +2,7 @@
 title: Drop trailing primary-key columns from Suggestions
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: done
 ---
 
 ## Parent
@@ -15,10 +15,10 @@ InnoDB appends the primary key to every secondary index, so `ORDER BY created_at
 
 ## Acceptance criteria
 
-- [ ] Unit: `WHERE merchant_id = ? ORDER BY created_at, id` with PK `(id)` → `(merchant_id, created_at)`.
-- [ ] Unit: composite PK `(merchant_id, segment_id, day, slot_id)` suffixes are stripped correctly.
-- [ ] Dedupe treats an existing index `(a, b)` as covering a candidate `(a, b, id)`.
-- [ ] Staging cases #8, #13, #16 reproduce without a trailing `id`.
+- [x] Unit: `WHERE merchant_id = ? ORDER BY created_at, id` with PK `(id)` → `(merchant_id, created_at)`.
+- [x] Unit: composite PK `(merchant_id, segment_id, day, slot_id)` suffixes are stripped correctly.
+- [x] Dedupe treats an existing index `(a, b)` as covering a candidate `(a, b, id)`.
+- [x] Staging cases #8, #13, #16 reproduce without a trailing `id`.
 
 ## Blocked by
 

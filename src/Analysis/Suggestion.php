@@ -47,11 +47,12 @@ final class Suggestion
     private ColumnOrder $order;
 
     /**
-     * @param  list<string>  $columns  proposed columns, in index order
+     * @param  list<string>  $columns  the columns the served queries need, in index order; the proposed ones leave out the trailing primary key columns InnoDB appends anyway
      * @param  list<string>  $reasons
      * @param  list<Index>  $existingIndexes
      * @param  array<string, string>  $columnTypes  involved column => type
      * @param  ?ColumnOrder  $order  how far the queries fix the order of `$columns` (exactly, when null)
+     * @param  PrimaryKey  $primaryKey  the table's, whose trailing columns the proposed ones leave out (empty when the engine does not append it)
      */
     public function __construct(
         public readonly string $connection,
@@ -64,8 +65,10 @@ final class Suggestion
         public readonly TableAccess $access,
         public readonly Plan $plan,
         ?ColumnOrder $order = null,
+        public readonly PrimaryKey $primaryKey = new PrimaryKey,
     ) {
         $this->order = $order ?? ColumnOrder::fixed($columns);
+        $this->columns = $this->proposed()->columns();
     }
 
     public function indexName(): string
@@ -90,7 +93,7 @@ final class Suggestion
             if ($index->servesLookups()
                 && ! $index->unique
                 && ! in_array($index->name, $taken, true)
-                && $index->isStrictLeftPrefixOf($this->order)
+                && $index->isStrictLeftPrefixOf($this->proposed())
                 && ($extendable === null || count($index->columns) > count($extendable->columns))) {
                 $extendable = $index;
             }
@@ -112,6 +115,26 @@ final class Suggestion
         if ($this->extends !== null) {
             $this->narrow(ColumnOrder::fixed($this->extends->columns));
         }
+    }
+
+    /**
+     * The order the extended index serves with the primary key InnoDB
+     * appends to it, when the proposed index does not serve that order too:
+     * dropping the extended index loses it (a query relying on it, such as an
+     * `ORDER BY` ending in the primary key, may even be one an earlier
+     * Suggestion left the key out for). Null when nothing is lost.
+     *
+     * @return ?list<string>
+     */
+    public function lostOrder(): ?array
+    {
+        if ($this->extends === null) {
+            return null;
+        }
+
+        $held = $this->primaryKey->appendedTo($this->extends->columns);
+
+        return array_slice($this->primaryKey->appendedTo($this->columns), 0, count($held)) === $held ? null : $held;
     }
 
     /**
@@ -186,7 +209,7 @@ final class Suggestion
     public function absorb(self $other, Leeway $leeway = Leeway::Prefix): void
     {
         $this->order = $this->order->startingWith($other->order, $leeway) ?? $this->order;
-        $this->columns = $this->order->columns();
+        $this->columns = $this->proposed()->columns();
 
         $this->flag($other->reasons);
 
@@ -202,6 +225,15 @@ final class Suggestion
     private function narrow(ColumnOrder $prefix): void
     {
         $this->order = $this->order->startingWith($prefix) ?? $this->order;
-        $this->columns = $this->order->columns();
+        $this->columns = $this->proposed()->columns();
+    }
+
+    /**
+     * The order the served Fingerprints need, without the trailing primary
+     * key columns InnoDB appends to the index anyway.
+     */
+    private function proposed(): ColumnOrder
+    {
+        return $this->primaryKey->strip($this->order);
     }
 }

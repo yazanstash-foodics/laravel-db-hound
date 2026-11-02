@@ -20,6 +20,11 @@ final readonly class Index
         public bool $visible = true,
     ) {}
 
+    public function isPrimary(): bool
+    {
+        return $this->name === 'PRIMARY';
+    }
+
     /**
      * Whether the optimizer can use this index for equality, range and sort
      * lookups by left prefix: a visible B-tree. A FULLTEXT or SPATIAL index
@@ -32,12 +37,13 @@ final readonly class Index
 
     /**
      * Whether this index already serves `$columns`: it can serve lookups and
-     * `$columns`, in an order they allow, is a left prefix of its columns.
+     * `$columns`, in an order they allow, is a left prefix of the columns it
+     * holds, the primary key InnoDB appends to it included.
      */
-    public function coversAsLeftPrefix(ColumnOrder $columns): bool
+    public function coversAsLeftPrefix(ColumnOrder $columns, PrimaryKey $primaryKey = new PrimaryKey): bool
     {
         return $this->servesLookups()
-            && ColumnOrder::fixed($this->columns)->startingWith($columns) !== null;
+            && ColumnOrder::fixed($primaryKey->appendedTo($this->columns))->startingWith($columns) !== null;
     }
 
     /**

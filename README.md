@@ -327,9 +327,9 @@ select * from `orders` where `branch_id` = ? and `status` in (?) order by `creat
 | **Table** | The table to index, as MySQL names it: the physical name, including the connection's table `prefix` (`config/database.php`) when it has one. `tables.allow`/`deny` and `analysis.ignore.tables` take names without the prefix, but the Report shows the name the SQL used. |
 | **Connection** | The captured connection whose queries need the index. Write the migration for that connection's database. |
 | **Table rows (estimate)** | Row count from `information_schema.TABLES`. It is an estimate, but it is enough to judge how expensive the DDL will be. |
-| **Proposed columns (in order)** | Index columns in order: selective equality columns (most distinct values first, by index statistics or the column type; ties and columns without an estimate alphabetically, unless another served query or the extended index needs them in another order), then weak filters (`IS NULL`, booleans, enums, columns with few distinct values; an `IS NOT NULL` only when nothing follows it), then `IN` lists and range columns, then sort or group columns. A weak filter never leads: without a selective equality before it, it is left out. **Keep this order.** |
+| **Proposed columns (in order)** | Index columns in order: selective equality columns (most distinct values first, by index statistics or the column type; ties and columns without an estimate alphabetically, unless another served query or the extended index needs them in another order), then weak filters (`IS NULL`, booleans, enums, columns with few distinct values; an `IS NOT NULL` only when nothing follows it), then `IN` lists and range columns, then sort or group columns. A weak filter never leads: without a selective equality before it, it is left out. Trailing primary key columns are left out too: InnoDB appends the primary key to every secondary index, so `(merchant_id, created_at)` already serves `ORDER BY created_at, id` (on InnoDB tables only: other engines, such as MyISAM, keep the key in the proposed columns). **Keep this order**, and don't add the primary key back. |
 | **Proposed index name** | `{table}_{columns}_index`, lowercase, built from the physical table name (so it includes any table prefix). This is the name Laravel gives the index by default when the connection's `prefix_indexes` is on, as it is in Laravel's default config. |
-| **Kind** | `new index`, or `extend existing index <name> (<old columns>) to (<new columns>)`: replace that index with the proposed one, which starts with its columns. |
+| **Kind** | `new index`, or `extend existing index <name> (<old columns>) to (<new columns>)`: replace that index with the proposed one, which starts with its columns. On InnoDB it ends with a warning when the old index, with the primary key appended, serves an order the new one does not (see [extending an existing index](#writing-the-migration-extending-an-existing-index)). |
 | **Reasons** | Symptoms found in the plan: `full scan` (`type` is `ALL`), `no index used` (no key, many rows examined), `filesort` (`Using filesort`), `temporary table` (`Using temporary`). |
 | **Note** | Zero or more. When a range column keeps the index from serving the `ORDER BY` or `GROUP BY`, this names the equality → sort → range alternative. db-hound can't know how selective the range is, so the choice is yours (see below). |
 | **EXPLAIN summary** | `type` (access type), `key` (index used, `—` for none), `rows` (rows examined), and `extras` (`Using filesort` and `Using temporary`) of the table in the current plan. |
@@ -341,7 +341,7 @@ select * from `orders` where `branch_id` = ? and `status` in (?) order by `creat
 Suggestions are already **consolidated** and **deduplicated**:
 
 - When one Suggestion's index also serves another's on the same table, only one is kept, and it serves both sets of Fingerprints with their impact summed. An index serves a query when the query's columns are its left prefix, taking its equality columns in any order and its weak filters in any order or not at all (a query filters the rows the index returns on a weak filter the index leaves out). So `(a, b, c)` and `(b, a, c)` with `a` and `b` equality columns are one index, and `(merchant_id, deleted_at, created_at)` and `(merchant_id, is_contact_user, created_at)` become `(merchant_id, created_at)`. Equality columns before a range or sort are never left out: `(a = ?, b > ?)` and `(b = ?, a > ?)` stay apart. A Suggestion several others serve goes to the one with the most impact.
-- A Suggestion an existing index already serves, by the same rule, is dropped.
+- A Suggestion an existing index already serves, by the same rule, is dropped. An existing index counts with the primary key InnoDB appends to it: `(a, b)` serves a query that needs `(a, b, id)`, but `(a, c)` does not serve one that needs `(a, id)`.
 - When an existing non-unique B-tree index is a strict left prefix of the proposed columns, the Suggestion extends it rather than adding another index.
 
 ### Unparsed queries
@@ -442,7 +442,7 @@ return new class extends Migration
 
 ### Writing the migration: extending an existing index
 
-When **Kind** says `extend existing index <old> (…) to (…)`, the proposed index starts with all of the old index's columns, so it serves every query the old one did. Replace the old index: **add the new index first, then drop the old one**, in that order:
+When **Kind** says `extend existing index <old> (…) to (…)`, the proposed index starts with all of the old index's columns, so it serves every query the old one did on those columns. Replace the old index: **add the new index first, then drop the old one**, in that order:
 
 ```php
 public function up(): void
@@ -471,6 +471,7 @@ public function down(): void
 - Dropping the old index first fails if a foreign key needs it (MySQL error 1553), and it leaves the table without an index on those columns until the new one is built. Adding first avoids both: once the new index exists, MySQL lets the foreign key use it.
 - Extension is only proposed for non-unique, visible B-tree indexes. A unique index is never extended, because a longer index would no longer enforce the uniqueness.
 - Check the codebase for index hints (`USE INDEX`, `FORCE INDEX`) or raw SQL that names the old index before you drop it.
+- On InnoDB the old index also holds the primary key right after its columns, so it serves, say, `WHERE branch_id = ? ORDER BY id`; the new index, with other columns before the key, does not. When **Kind** warns about it, look for queries that sort or seek on the primary key right after the old columns (db-hound may have left a trailing `id` out of an earlier Suggestion for exactly this reason). If one relies on it, keep the old index and tell the engineer.
 - If you prefer to keep the old index for one release (to roll out safely, or because something else depends on it), make the drop a separate, later migration, and tell the engineer the table temporarily has both.
 
 ### Large tables (online DDL)

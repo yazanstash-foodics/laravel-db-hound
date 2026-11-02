@@ -9,9 +9,11 @@ use Foodics\DbHound\Capture\QueryAggregate;
 use Foodics\DbHound\Capture\Recorder;
 use Foodics\DbHound\Contracts\Driver;
 use Foodics\DbHound\Contracts\Store;
+use Foodics\DbHound\Report\ReportContext;
 use Foodics\DbHound\Tests\IntegrationTestCase;
 use Foodics\DbHound\Tests\TestCase;
 use Illuminate\Encryption\Encrypter;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Redis;
 
 uses(TestCase::class)->in('Unit');
@@ -123,11 +125,29 @@ function readmeSection(string $heading): string
 }
 
 /**
+ * The header of a Report run on 2026-11-01 over one connection.
+ */
+function reportContext(): ReportContext
+{
+    return new ReportContext(
+        generatedAt: Carbon::parse('2026-11-01 10:00:00', 'UTC'),
+        connections: ['mysql'],
+        firstSeen: Carbon::parse('2026-10-02 08:15:00', 'UTC'),
+        lastSeen: Carbon::parse('2026-11-01 09:59:00', 'UTC'),
+        fingerprints: 4,
+        queries: 1250,
+        thresholds: [],
+    );
+}
+
+/**
  * A Driver over tables shaped like those of the staging Report the ticket
  * cites, with per-column cardinality as MySQL index statistics would give it.
+ * Each table's primary key is `id` unless `primary` names its columns, and
+ * its engine InnoDB unless `engine` names another.
  *
  * @param  array<string, Plan>  $plans  SQL => plan
- * @param  array<string, array{rows: int, columns: array<string, string>, indexes?: list<Index>, cardinality?: array<string, int>}>  $tables
+ * @param  array<string, array{rows: int, columns: array<string, string>, engine?: string, primary?: list<string>, indexes?: list<Index>, cardinality?: array<string, int>}>  $tables
  */
 function cardinalityDriver(array $plans, array $tables): Driver
 {
@@ -147,7 +167,12 @@ function cardinalityDriver(array $plans, array $tables): Driver
 
         public function indexes(string $table): array
         {
-            return [new Index('PRIMARY', ['id'], true), ...$this->tables[$table]['indexes'] ?? []];
+            return [new Index('PRIMARY', $this->tables[$table]['primary'] ?? ['id'], true), ...$this->tables[$table]['indexes'] ?? []];
+        }
+
+        public function engine(string $table): string
+        {
+            return $this->tables[$table]['engine'] ?? 'InnoDB';
         }
 
         public function rowCount(string $table): int
@@ -173,7 +198,7 @@ function cardinalityDriver(array $plans, array $tables): Driver
  * and max ms `$stats` gives it, else 10 runs of 100 ms on average.
  *
  * @param  array<string, Plan>  $plans  SQL => plan
- * @param  array<string, array{rows: int, columns: array<string, string>, indexes?: list<Index>, cardinality?: array<string, int>}>  $tables
+ * @param  array<string, array{rows: int, columns: array<string, string>, engine?: string, primary?: list<string>, indexes?: list<Index>, cardinality?: array<string, int>}>  $tables
  * @param  array<string, array{int, float, float}>  $stats  SQL => [count, total ms, max ms]
  */
 function analyzeWithCardinality(array $plans, array $tables, ?Analyzer $analyzer = null, array $stats = []): AnalysisResult

@@ -100,8 +100,9 @@ final class Analyzer
                 foreach ($this->candidates($query->sql, $shape->sql, $plan, $driver, $unparsed, $query->connection) as [$access, $reference, $reasons, $candidate]) {
                     $table = $reference->table;
                     $indexes = $driver->indexes($table);
+                    $primaryKey = PrimaryKey::of($indexes, $driver->engine($table));
 
-                    if ($this->alreadyIndexed($indexes, $candidate->order)) {
+                    if ($this->alreadyIndexed($indexes, $candidate->order, $primaryKey)) {
                         continue;
                     }
 
@@ -114,10 +115,11 @@ final class Analyzer
                         reasons: [],
                         rowCount: $driver->rowCount($table),
                         existingIndexes: $indexes,
-                        columnTypes: array_intersect_key($driver->columnTypes($table), array_flip($candidate->columns)),
+                        columnTypes: array_intersect_key($driver->columnTypes($table), array_flip($primaryKey->strip($candidate->order)->columns())),
                         access: $access,
                         plan: $plan,
                         order: $candidate->order,
+                        primaryKey: $primaryKey,
                     )];
                 }
             } catch (Throwable $e) {
@@ -318,7 +320,7 @@ final class Analyzer
                 $driver->cardinality($reference->table),
                 $this->lowSelectivityShare,
             );
-            $candidate = IndexCandidate::for($reference, $before, $position === $driving, $selectivity);
+            $candidate = IndexCandidate::for($reference, $before, $position === $driving, $selectivity, PrimaryKey::of($driver->indexes($reference->table), $driver->engine($reference->table)));
 
             if ($candidate === null) {
                 if ($reference->hasUnindexablePredicates || $extracted->hasUnresolvedColumns) {
@@ -415,10 +417,10 @@ final class Analyzer
     /**
      * @param  list<Index>  $indexes
      */
-    private function alreadyIndexed(array $indexes, ColumnOrder $columns): bool
+    private function alreadyIndexed(array $indexes, ColumnOrder $columns, PrimaryKey $primaryKey): bool
     {
         foreach ($indexes as $index) {
-            if ($index->coversAsLeftPrefix($columns)) {
+            if ($index->coversAsLeftPrefix($columns, $primaryKey)) {
                 return true;
             }
         }

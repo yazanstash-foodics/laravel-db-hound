@@ -321,6 +321,18 @@ final class MySqlDriver implements Driver
         return $indexes;
     }
 
+    public function engine(string $table): string
+    {
+        $row = $this->db->selectOne(
+            'SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?',
+            [$table],
+        );
+
+        $row = array_change_key_case((array) $row, CASE_UPPER);
+
+        return (string) ($row['ENGINE'] ?? '');
+    }
+
     public function rowCount(string $table): int
     {
         $row = $this->onOneSession(fn (PDO $session) => $this->withFreshStatistics($session, fn () => $this->firstRow(

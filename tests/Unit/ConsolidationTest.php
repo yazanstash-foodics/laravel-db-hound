@@ -36,6 +36,11 @@ function ordersDriver(array $indexes = []): Driver
             return $table === 'orders' ? [new Index('PRIMARY', ['id'], true), ...$this->indexes] : [];
         }
 
+        public function engine(string $table): string
+        {
+            return 'InnoDB';
+        }
+
         public function rowCount(string $table): int
         {
             return $table === 'orders' ? 5000 : 0;
@@ -521,7 +526,7 @@ it('suggests one index for the tenant\'s branches sorted by creation date (stagi
 
     expect($result->unparsed)->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->extends?->name, $suggestion->fingerprints], $result->suggestions))
-        ->toBe([[['merchant_id', 'is_active', 'created_at', 'id'], 'branches_merchant_id_index', [$active, $approved]]]);
+        ->toBe([[['merchant_id', 'is_active', 'created_at'], 'branches_merchant_id_index', [$active, $approved]]]);
 });
 
 it('keeps a candidate whose sort or range column the query also filters as a weak filter, when an existing index has only its equality columns', function (string $sql) {

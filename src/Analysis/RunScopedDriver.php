@@ -5,7 +5,7 @@ namespace Foodics\DbHound\Analysis;
 use Foodics\DbHound\Contracts\Driver;
 
 /**
- * A Driver that looks up each table's schema metadata (indexes, row count,
+ * A Driver that looks up each table's schema metadata (indexes, engine, row count,
  * column types, cardinality) once, for the length of one analyze run: the
  * Analyzer asks for the same tables Fingerprint after Fingerprint, and each
  * lookup is a query on the analysis connection. A failed lookup is not kept.
@@ -30,6 +30,11 @@ final class RunScopedDriver implements Driver
     public function indexes(string $table): array
     {
         return $this->looked['indexes|'.$table] ??= $this->driver->indexes($table);
+    }
+
+    public function engine(string $table): string
+    {
+        return $this->looked['engine|'.$table] ??= $this->driver->engine($table);
     }
 
     public function rowCount(string $table): int

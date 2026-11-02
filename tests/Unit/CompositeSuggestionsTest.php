@@ -57,6 +57,11 @@ function schemaDriver(array $plans, array $indexes = []): Driver
             return [new Index('PRIMARY', ['id'], true), ...$this->indexes[$table] ?? []];
         }
 
+        public function engine(string $table): string
+        {
+            return 'InnoDB';
+        }
+
         public function rowCount(string $table): int
         {
             return ['branches' => 50, 'orders' => 5000, 'items' => 8000][$table] ?? 0;

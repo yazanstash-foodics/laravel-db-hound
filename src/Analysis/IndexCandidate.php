@@ -44,8 +44,9 @@ final readonly class IndexCandidate
      *
      * @param  list<string>  $readBefore  names of the references the plan reads before this one
      * @param  bool  $drives  whether the plan reads this reference first: only then can its index return rows in sort order
+     * @param  PrimaryKey  $primaryKey  the table's, whose trailing columns the alternative in the note leaves out, InnoDB appending them anyway
      */
-    public static function for(TableColumns $reference, array $readBefore, bool $drives = true, Selectivity $selectivity = new Selectivity): ?self
+    public static function for(TableColumns $reference, array $readBefore, bool $drives = true, Selectivity $selectivity = new Selectivity, PrimaryKey $primaryKey = new PrimaryKey): ?self
     {
         $equality = [];
 
@@ -118,7 +119,7 @@ final readonly class IndexCandidate
             return new self($order);
         }
 
-        $alternative = [...array_merge([], ...$seeksBefore($selective)), ...$sort, ...array_diff($ranged, $sort)];
+        $alternative = $primaryKey->strip(ColumnOrder::fixed([...array_merge([], ...$seeksBefore($selective)), ...$sort, ...array_diff($ranged, $sort)]))->columns();
         $remains = $reference->sortClause === 'GROUP BY' ? 'temporary table' : 'filesort';
 
         return new self($order, sprintf(

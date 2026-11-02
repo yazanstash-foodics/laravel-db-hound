@@ -49,6 +49,21 @@ final readonly class ColumnOrder
     }
 
     /**
+     * This order cut after its first `$count` columns.
+     */
+    public function firstColumns(int $count): self
+    {
+        $blocks = [];
+
+        foreach ($this->blocks as $block) {
+            $blocks[] = array_slice($block, 0, max(0, $count));
+            $count -= count($block);
+        }
+
+        return new self($blocks, $this->optional);
+    }
+
+    /**
      * This order, narrowed so that `$prefix` (in one of the orders it
      * allows) starts it: `$prefix`'s optional columns that this order has
      * next come first, and, by `$leeway`, those it does not are left out

@@ -10,19 +10,6 @@ use Foodics\DbHound\Report\ReportContext;
 use Foodics\DbHound\Report\ReportRenderer;
 use Illuminate\Support\Carbon;
 
-function reportContext(): ReportContext
-{
-    return new ReportContext(
-        generatedAt: Carbon::parse('2026-11-01 10:00:00', 'UTC'),
-        connections: ['mysql'],
-        firstSeen: Carbon::parse('2026-10-02 08:15:00', 'UTC'),
-        lastSeen: Carbon::parse('2026-11-01 09:59:00', 'UTC'),
-        fingerprints: 4,
-        queries: 1250,
-        thresholds: [],
-    );
-}
-
 it('renders the header, each Suggestion with its full context, and the unparsed section', function () {
     $suggestion = new Suggestion(
         connection: 'mysql',
