@@ -19,7 +19,7 @@ use InvalidArgumentException;
  *
  *   DB_HOUND_MYSQL80_PORT / DB_HOUND_MYSQL84_PORT / DB_HOUND_REDIS_PORT (shared with docker-compose.yml)
  *   DB_HOUND_DB_HOST, DB_HOUND_DB_DATABASE, DB_HOUND_DB_USERNAME, DB_HOUND_DB_PASSWORD
- *   DB_HOUND_REDIS_HOST, DB_HOUND_REDIS_DB, DB_HOUND_REDIS_CLIENT
+ *   DB_HOUND_REDIS_HOST, DB_HOUND_REDIS_DB
  */
 class IntegrationTestCase extends TestCase
 {
@@ -126,7 +126,7 @@ class IntegrationTestCase extends TestCase
             'strict' => true,
         ]);
 
-        $config->set('database.redis.client', env('DB_HOUND_REDIS_CLIENT', 'phpredis'));
+        $config->set('database.redis.client', 'phpredis');
         $config->set('database.redis.default', [
             'host' => env('DB_HOUND_REDIS_HOST', '127.0.0.1'),
             'port' => env('DB_HOUND_REDIS_PORT', '63790'),

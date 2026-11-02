@@ -38,9 +38,8 @@ function pushedRedisValues(): array
 
     foreach ($redis->keys(config('db-hound.redis.prefix').'*') as $key) {
         $key = str_starts_with($key, $clientPrefix) ? substr($key, strlen($clientPrefix)) : $key;
-        // phpredis reports types as integers, predis as names.
-        $type = $redis->type($key);
-        $type = is_int($type) ? [1 => 'string', 2 => 'set', 5 => 'hash'][$type] ?? 'other' : (string) $type;
+        // phpredis reports types as integers.
+        $type = [1 => 'string', 2 => 'set', 5 => 'hash'][$redis->type($key)] ?? 'other';
 
         $values[$key] = match ($type) {
             'hash' => implode("\n", $redis->hgetall($key)),

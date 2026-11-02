@@ -128,7 +128,7 @@ For deeper investigation, `php artisan db-hound:dump` writes a sensitive JSONL *
   3. **Analyzer (unit):** fake Driver fed by recorded `EXPLAIN` JSON and schema fixtures captured from real MySQL; assert Suggestions (ordering, consolidation, dedupe, extend-existing, ranking, unparsed).
   4. **Fingerprinter and Report renderer (unit):** pure input → output.
 - **Infrastructure:** Docker Compose with MySQL 8.0, MySQL 8.4 and Redis for local runs; same as GitHub Actions services. Integration tests live in a Pest `integration` group.
-- **CI matrix:** latest dependencies only, Laravel 13, Ubuntu. Unit tests on PHP 8.4/8.5; integration tests on PHP 8.4 × MySQL 8.0/8.4 with phpredis.
+- **CI matrix:** latest dependencies only, Laravel 13, Ubuntu. Unit tests on PHP 8.4/8.5; integration tests on PHP 8.4 × MySQL 8.0/8.4 with phpredis. The package requires `ext-redis`; Predis is not supported.
 - **Prior art:** only the Spatie skeleton exists (Testbench `TestCase`, Pest, arch test against debug functions). The default SQLite testing connection is insufficient for integration tests and will be replaced/augmented with a MySQL connection.
 
 ## Out of Scope

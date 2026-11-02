@@ -352,3 +352,13 @@ it('fails open: queries run normally and one warning a minute is logged while th
     expect($lookUp(50))->each->toBe('SKU-1');
     Log::shouldHaveReceived('warning')->twice();
 })->with('stores');
+
+it('uses phpredis for the redis Store even when the app configures another client', function () {
+    config()->set('database.redis.client', 'predis');
+    useStore('redis');
+    $store = app(Store::class);
+
+    $store->push([contractAggregate('a', count: 2)]);
+
+    expect(snapshotByKey($store)['mysql:a']->count)->toBe(2);
+});

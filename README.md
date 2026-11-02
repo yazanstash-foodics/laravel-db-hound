@@ -38,6 +38,7 @@ Missing indexes usually show up only in production. Local and CI databases are t
 - PHP 8.4
 - Laravel 13
 - MySQL 8.0 or later. MariaDB is best-effort.
+- The `redis` PHP extension (phpredis). Predis is not supported: db-hound always talks to Redis through phpredis, whatever client your app uses.
 - Redis, for the default Store. Single-server apps can use the `file` Store instead.
 - A running Laravel scheduler, for flush and prune.
 
