@@ -112,16 +112,34 @@ function readme(): string
 }
 
 /**
- * The part of the README under `$heading`, up to the next `## ` heading.
+ * The part of the README under `$heading`, up to the next `## ` heading
+ * outside a code fence (the Report format examples hold `## ` lines).
  */
 function readmeSection(string $heading): string
 {
-    $start = strpos(readme(), "\n## {$heading}\n");
+    $lines = explode("\n", readme());
+    $start = array_search("## {$heading}", $lines, true);
     expect($start)->not->toBeFalse("README has no \"## {$heading}\" section");
 
-    $end = strpos(readme(), "\n## ", (int) $start + 1);
+    $section = [];
+    $fence = null;
+    foreach (array_slice($lines, (int) $start) as $offset => $line) {
+        if ($fence === null && $offset > 0 && str_starts_with($line, '## ')) {
+            break;
+        }
 
-    return substr(readme(), (int) $start, $end === false ? null : $end - (int) $start);
+        if (preg_match('/^(`{3,})/', $line, $marker)) {
+            $fence = match (true) {
+                $fence === null => $marker[1],
+                $marker[1] === $fence && trim($line) === $fence => null,
+                default => $fence,
+            };
+        }
+
+        $section[] = $line;
+    }
+
+    return "\n".implode("\n", $section);
 }
 
 /**

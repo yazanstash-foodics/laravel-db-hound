@@ -96,7 +96,7 @@ it('never reports ignored tables or information_schema, SHOW and SET statements'
 
     $report = analyzedReport();
     // The header names the ignore lists themselves.
-    $body = substr($report, (int) strpos($report, '## Suggestions'));
+    $body = substr($report, (int) strpos($report, '## Summary'));
 
     expect($report)->toContain('**Fingerprints explained:** 1')
         ->toContain('**Unparsed queries:** 0')
@@ -153,6 +153,37 @@ it('orders Suggestions by impact, highest first', function () {
         ->toContain('### 1. `hound_branches` (`status`)')
         ->toContain('### 2. `hound_orders` (`status`)')
         ->and(strpos($report, '100,000.00'))->toBeLessThan(strpos($report, '60,000.00'));
+});
+
+it('summarizes every Suggestion, then groups them by table, tables by summed impact', function () {
+    Schema::table('hound_orders', function (Blueprint $table) {
+        $table->string('kind')->default('food');
+    });
+
+    persistFingerprint('select * from `hound_branches` where `status` = ?', count: 100, avgMs: 900.0);
+    persistFingerprint('select * from `hound_orders` where `status` = ?', count: 100, avgMs: 600.0);
+    persistFingerprint('select * from `hound_orders` where `kind` = ?', count: 100, avgMs: 400.0);
+
+    $report = analyzedReport();
+    preg_match_all('/^#{2,3} .+$/m', $report, $headings);
+
+    expect($report)->toContain(<<<'MD'
+| 1 | `hound_branches` | `status` | new | full scan | 90,000.00 | 1 |
+| 2 | `hound_orders` | `status` | new | full scan | 60,000.00 | 1 |
+| 3 | `hound_orders` | `kind` | new | full scan | 40,000.00 | 1 |
+MD)
+        ->and($headings[0])->toBe([
+            '## Summary',
+            '## `hound_orders`',
+            '### 2. `hound_orders` (`status`)',
+            '### 3. `hound_orders` (`kind`)',
+            '## `hound_branches`',
+            '### 1. `hound_branches` (`status`)',
+            '## Unparsed queries',
+        ])
+        ->and(substr_count($report, '**Existing indexes on `hound_orders`**'))->toBe(1)
+        ->and($report)->toContain('- **Total impact:** 100,000.00')
+        ->toContain("**Column types**\n\n- `status`: varchar(255)\n- `kind`: varchar(255)\n");
 });
 
 it('lists the thresholds used in the Report header', function () {

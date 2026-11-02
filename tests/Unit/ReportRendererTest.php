@@ -10,7 +10,7 @@ use Foodics\DbHound\Report\ReportContext;
 use Foodics\DbHound\Report\ReportRenderer;
 use Illuminate\Support\Carbon;
 
-it('renders the header, each Suggestion with its full context, and the unparsed section', function () {
+it('renders the header, the summary, each table with its context and Suggestions, and the unparsed section', function () {
     $suggestion = new Suggestion(
         connection: 'mysql',
         table: 'orders',
@@ -45,13 +45,30 @@ it('renders the header, each Suggestion with its full context, and the unparsed 
 - **Suggestions:** 1
 - **Unparsed queries:** 1
 
-## Suggestions
+## Summary
 
-### 1. `orders` (`status`)
+| Rank | Table | Proposed columns | Kind | Reasons | Impact | Fingerprints served |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | `orders` | `status` | new | full scan | 50,000.00 | 2 |
+
+## `orders`
 
 - **Table:** `orders`
 - **Connection:** mysql
 - **Table rows (estimate):** 182,340
+- **Total impact:** 50,000.00
+
+**Existing indexes on `orders`**
+
+- `PRIMARY` (`id`) unique
+- `orders_branch_id_created_at_index` (`branch_id`, `created_at`)
+
+**Column types**
+
+- `status`: varchar(20)
+
+### 1. `orders` (`status`)
+
 - **Proposed columns (in order):** `status`
 - **Proposed index name:** `orders_status_index`
 - **Kind:** new index
@@ -62,15 +79,6 @@ it('renders the header, each Suggestion with its full context, and the unparsed 
 | type | key | rows | extras |
 | --- | --- | --- | --- |
 | ALL | — | 181,002 | Using filesort |
-
-**Existing indexes on `orders`**
-
-- `PRIMARY` (`id`) unique
-- `orders_branch_id_created_at_index` (`branch_id`, `created_at`)
-
-**Column types**
-
-- `status`: varchar(20)
 
 **Impact**
 
@@ -103,7 +111,7 @@ it('says so when there is nothing to suggest', function () {
     $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult([], []));
 
     expect($markdown)
-        ->toContain("## Suggestions\n\nNo Suggestions.\n")
+        ->toContain("## Summary\n\nNo Suggestions.\n")
         ->toContain("## Unparsed queries\n\nNone.\n");
 });
 
@@ -232,4 +240,130 @@ it('lists the thresholds used and how many Fingerprints qualified for EXPLAIN in
 - **Suggestions:** 0
 
 MD);
+});
+
+/**
+ * A Suggestion on `$table` serving one Fingerprint with `$impact` total ms.
+ *
+ * @param  list<string>  $columns
+ * @param  list<Index>  $indexes
+ */
+function tableSuggestion(string $table, array $columns, float $impact, array $indexes = [], int $rows = 5000, ?Index $extends = null, string $connection = 'mysql'): Suggestion
+{
+    $suggestion = new Suggestion(
+        connection: $connection,
+        table: $table,
+        columns: $columns,
+        reasons: ['full scan'],
+        rowCount: $rows,
+        existingIndexes: $indexes,
+        columnTypes: array_fill_keys($columns, 'bigint unsigned'),
+        access: new TableAccess($table, 'ALL', null, $rows),
+        plan: new Plan([new TableAccess($table, 'ALL', null, $rows)]),
+    );
+    $suggestion->extends = $extends;
+    $suggestion->serve('select * from `'.$table.'` where `'.implode('` = ? and `', $columns).'` = ?', 10, $impact, 20.0);
+
+    return $suggestion;
+}
+
+it('summarizes every Suggestion in one table right after the header', function () {
+    $branch = new Index('payments_branch_id_index', ['branch_id'], false);
+    $byBranch = tableSuggestion('payments', ['branch_id', 'status'], 9000.0, [$branch], extends: $branch);
+    $byBranch->flag(['filesort']);
+    $byBranch->serve('select * from `payments` where `branch_id` = ? and `status` = ? limit 10', 5, 500.0, 20.0);
+
+    $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult([
+        $byBranch,
+        tableSuggestion('orders', ['customer_id'], 1234.5),
+    ], []));
+
+    expect($markdown)->toContain(<<<'MD'
+- **Unparsed queries:** 0
+
+## Summary
+
+| Rank | Table | Proposed columns | Kind | Reasons | Impact | Fingerprints served |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | `payments` | `branch_id`, `status` | extend `payments_branch_id_index` | full scan, filesort | 9,500.00 | 2 |
+| 2 | `orders` | `customer_id` | new | full scan | 1,234.50 | 1 |
+
+MD);
+});
+
+it('gives each table one section with its context, tables by summed impact and their Suggestions by impact', function () {
+    $paymentIndexes = [new Index('PRIMARY', ['id'], true), new Index('payments_branch_id_index', ['branch_id'], false)];
+    $logIndexes = [new Index('PRIMARY', ['id'], true)];
+
+    $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult([
+        tableSuggestion('payments', ['customer_id'], 9000.0, $paymentIndexes, rows: 182340),
+        tableSuggestion('integration_logs', ['reference'], 8000.0, $logIndexes, rows: 2500000),
+        tableSuggestion('integration_logs', ['merchant_id'], 7000.0, $logIndexes, rows: 2500000),
+        tableSuggestion('payments', ['order_id'], 100.0, $paymentIndexes, rows: 182340),
+    ], []));
+
+    $body = substr($markdown, (int) strpos($markdown, "\n## `"));
+
+    expect($body)->toStartWith(<<<'MD'
+
+## `integration_logs`
+
+- **Table:** `integration_logs`
+- **Connection:** mysql
+- **Table rows (estimate):** 2,500,000
+- **Total impact:** 15,000.00
+
+**Existing indexes on `integration_logs`**
+
+- `PRIMARY` (`id`) unique
+
+**Column types**
+
+- `reference`: bigint unsigned
+- `merchant_id`: bigint unsigned
+
+### 2. `integration_logs` (`reference`)
+
+- **Proposed columns (in order):** `reference`
+MD)
+        ->and(substr_count($markdown, '**Existing indexes on `payments`**'))->toBe(1)
+        ->and(substr_count($markdown, '- `payments_branch_id_index` (`branch_id`)'))->toBe(1)
+        ->and(substr_count($markdown, '**Column types**'))->toBe(2)
+        ->and(substr_count($markdown, '- **Table rows (estimate):**'))->toBe(2);
+
+    preg_match_all('/^#{2,3} (?:\d+\. )?`([a-z_]+)`(?: \((`[a-z_]+`)\))?$/m', $body, $headings, PREG_SET_ORDER);
+
+    expect(array_map(fn (array $heading) => $heading[0], $headings))->toBe([
+        '## `integration_logs`',
+        '### 2. `integration_logs` (`reference`)',
+        '### 3. `integration_logs` (`merchant_id`)',
+        '## `payments`',
+        '### 1. `payments` (`customer_id`)',
+        '### 4. `payments` (`order_id`)',
+    ]);
+});
+
+it('names the connection of each Suggestion and table section when the Suggestions span several connections', function () {
+    $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult([
+        tableSuggestion('orders', ['status'], 900.0),
+        tableSuggestion('orders', ['status'], 800.0, connection: 'reporting'),
+        tableSuggestion('orders', ['branch_id'], 700.0),
+    ], []));
+
+    preg_match_all('/^## .*$/m', $markdown, $sections);
+
+    expect($markdown)->toContain(<<<'MD'
+| Rank | Connection | Table | Proposed columns | Kind | Reasons | Impact | Fingerprints served |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | mysql | `orders` | `status` | new | full scan | 900.00 | 1 |
+| 2 | reporting | `orders` | `status` | new | full scan | 800.00 | 1 |
+| 3 | mysql | `orders` | `branch_id` | new | full scan | 700.00 | 1 |
+
+MD)
+        ->and($sections[0])->toBe([
+            '## Summary',
+            '## `orders` (mysql)',
+            '## `orders` (reporting)',
+            '## Unparsed queries',
+        ]);
 });

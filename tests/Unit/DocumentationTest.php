@@ -193,6 +193,8 @@ it('documents every field of the Report', function () {
     preg_match_all('/^- \*\*([^*]+):\*\*/m', $markdown, $fields);
     preg_match_all('/^\*\*([^*`(]+?)\s*(?:`|\(|\*\*)/m', $markdown, $blocks);
     preg_match_all('/^  - ([^:]+):/m', $markdown, $thresholds);
+    preg_match('/^\| Rank \|.*$/m', $markdown, $summary);
+    $summaryColumns = array_map('trim', explode('|', trim($summary[0] ?? '', '| ')));
 
     $documentation = readmeSection('Report format');
     $undocumented = array_values(array_filter([
@@ -201,9 +203,12 @@ it('documents every field of the Report', function () {
         // Block headings end with the table or a count: `Existing indexes on `orders``, `Served Fingerprints (2)`.
         ...array_map(fn (string $label) => "**{$label}", $blocks[1]),
         ...$thresholds[1],
+        ...array_map(fn (string $column) => "| **{$column}** |", $summaryColumns),
     ], fn (string $text) => ! str_contains($documentation, $text)));
 
-    expect($fields[1])->toContain('Generated at', 'Kind', 'Note')
+    expect($fields[1])->toContain('Generated at', 'Kind', 'Note', 'Total impact')
+        ->and($sections[1])->toContain('Summary', 'Unparsed queries')
+        ->and($summaryColumns)->toContain('Rank', 'Kind', 'Fingerprints served')
         ->and($blocks[1])->toContain('EXPLAIN summary', 'Existing indexes on', 'Served Fingerprints')
         ->and($thresholds[1])->toContain('Fingerprint count')
         ->and($undocumented)->toBe([]);

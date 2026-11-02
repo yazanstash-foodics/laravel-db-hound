@@ -58,7 +58,8 @@ it('suggests an index on an unindexed equality column after flush and analyze', 
     $report = Storage::disk('local')->get('db-hound/latest.md');
 
     expect($report)
-        ->toContain('## Suggestions')
+        ->toContain('## Summary')
+        ->toContain('## `hound_orders`')
         ->and(substr_count($report, '### '))->toBe(1)
         ->and($report)->toContain('`hound_orders`')
         ->toContain('(`customer_email`)')
@@ -77,8 +78,7 @@ it('suggests nothing for the same query on an indexed column', function () {
     $report = Storage::disk('local')->get('db-hound/latest.md');
 
     expect($report)
-        ->toContain('## Suggestions')
-        ->toContain('No Suggestions.')
+        ->toContain("## Summary\n\nNo Suggestions.\n")
         ->toContain('**Fingerprints analyzed:** 1 (50 captured queries)')
         ->and(substr_count($report, '### '))->toBe(0);
 });

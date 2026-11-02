@@ -275,27 +275,41 @@ The Report is Markdown with a fixed structure. It contains only normalized SQL (
 | **Suggestions** | Number of Suggestions below. |
 | **Unparsed queries** | Number of entries in the "Unparsed queries" section. |
 
-### Suggestions
+### Summary
 
-A `## Suggestions` section follows, with Suggestions ranked by impact (`count × avg ms`), highest first. If there are none, it says `No Suggestions.` Each Suggestion looks like this:
+A `## Summary` section follows the header: one row per Suggestion, ranked by impact (`count × avg ms`), highest first, so the whole Report fits on one screen. If there are none, it says `No Suggestions.` and no table sections follow.
+
+```markdown
+## Summary
+
+| Rank | Table | Proposed columns | Kind | Reasons | Impact | Fingerprints served |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | `orders` | `branch_id`, `status`, `created_at` | extend `orders_branch_id_index` | no index used, filesort | 50,000.00 | 2 |
+| 2 | `payments` | `customer_id` | new | full scan | 9,000.00 | 1 |
+```
+
+| Column | Meaning |
+| --- | --- |
+| **Rank** | The Suggestion's rank by impact. Its heading in its table's section starts with the same number. |
+| **Connection** | The captured connection of the table. Only present when the Suggestions span more than one connection, since two connections can each have a table of the same name. |
+| **Table** | The table to index (see **Table** below). |
+| **Proposed columns** | The proposed index columns, in order. |
+| **Kind** | `new`, or `extend <index>`: the existing index the Suggestion replaces. |
+| **Reasons** | The symptoms found in the plan. |
+| **Impact** | count × avg ms, summed over the Fingerprints the index serves. |
+| **Fingerprints served** | How many Fingerprints the index serves. |
+
+### Tables
+
+Then one `## <table>` section per connection and table that has Suggestions, ordered by the table's **Total impact** (the summed impact of its Suggestions), highest first. When the Suggestions span more than one connection, the heading also names the connection, as in ``## `orders` (reporting)``, so that two connections' tables of the same name get distinct sections. Each section gives the table's context once (row count, existing indexes, column types), then that table's Suggestions, highest impact first, each headed with its rank from the summary:
 
 ````markdown
-### 1. `orders` (`branch_id`, `status`, `created_at`) — extends `orders_branch_id_index`
+## `orders`
 
 - **Table:** `orders`
 - **Connection:** mysql
 - **Table rows (estimate):** 182,340
-- **Proposed columns (in order):** `branch_id`, `status`, `created_at`
-- **Proposed index name:** `orders_branch_id_status_created_at_index`
-- **Kind:** extend existing index `orders_branch_id_index` (`branch_id`), chosen because it is used by the current plan, to (`branch_id`, `status`, `created_at`): add this one first, then drop `orders_branch_id_index` (…)
-- **Reasons:** no index used, filesort
-- **Note:** filesort remains; consider `(branch_id, created_at, status)` if the range on `status` matches most rows.
-
-**EXPLAIN summary**
-
-| type | key | rows | extras |
-| --- | --- | --- | --- |
-| ref | orders_branch_id_index | 48,211 | Using filesort |
+- **Total impact:** 50,000.00
 
 **Existing indexes on `orders`**
 
@@ -307,6 +321,20 @@ A `## Suggestions` section follows, with Suggestions ranked by impact (`count ×
 - `branch_id`: bigint unsigned
 - `status`: varchar(20)
 - `created_at`: timestamp
+
+### 1. `orders` (`branch_id`, `status`, `created_at`) — extends `orders_branch_id_index`
+
+- **Proposed columns (in order):** `branch_id`, `status`, `created_at`
+- **Proposed index name:** `orders_branch_id_status_created_at_index`
+- **Kind:** extend existing index `orders_branch_id_index` (`branch_id`), chosen because it is used by the current plan, to (`branch_id`, `status`, `created_at`): add this one first, then drop `orders_branch_id_index` (…)
+- **Reasons:** no index used, filesort
+- **Note:** filesort remains; consider `(branch_id, created_at, status)` if the range on `status` matches most rows.
+
+**EXPLAIN summary**
+
+| type | key | rows | extras |
+| --- | --- | --- | --- |
+| ref | orders_branch_id_index | 48,211 | Using filesort |
 
 **Impact**
 
@@ -321,20 +349,28 @@ select * from `orders` where `branch_id` = ? and `status` in (?) order by `creat
 ```
 ````
 
+The table's fields, which apply to each of its Suggestions:
+
 | Field | Meaning |
 | --- | --- |
-| heading | Rank, table, proposed columns, and `— extends <index>` when the Suggestion extends an existing index. |
 | **Table** | The table to index, as MySQL names it: the physical name, including the connection's table `prefix` (`config/database.php`) when it has one. `tables.allow`/`deny` and `analysis.ignore.tables` take names without the prefix, but the Report shows the name the SQL used. |
 | **Connection** | The captured connection whose queries need the index. Write the migration for that connection's database. |
 | **Table rows (estimate)** | Row count from `information_schema.TABLES`. It is an estimate, but it is enough to judge how expensive the DDL will be. |
+| **Total impact** | The summed impact (count × avg ms) of the table's Suggestions, which orders the table sections. |
+| **Existing indexes on `<table>`** | Every index on the table, listed once for all its Suggestions: `name (columns)`, then `unique` when it is unique, its type when it is not a B-tree (for example `FULLTEXT`), and `invisible` when it is invisible. |
+| **Column types** | MySQL column type of each column the table's Suggestions propose, listed once. |
+
+Each Suggestion's fields:
+
+| Field | Meaning |
+| --- | --- |
+| heading | Rank (as in the summary), table, proposed columns, and `— extends <index>` when the Suggestion extends an existing index. |
 | **Proposed columns (in order)** | Index columns in order: selective equality columns (most distinct values first, by index statistics or the column type; ties and columns without an estimate alphabetically, unless another served query or the extended index needs them in another order), then weak filters (`IS NULL`, booleans, enums, columns with few distinct values; an `IS NOT NULL` only when nothing follows it), then `IN` lists and range columns, then sort or group columns. A weak filter never leads: without a selective equality before it, it is left out. Trailing primary key columns are left out too: InnoDB appends the primary key to every secondary index, so `(merchant_id, created_at)` already serves `ORDER BY created_at, id` (on InnoDB tables only: other engines, such as MyISAM, keep the key in the proposed columns). **Keep this order**, and don't add the primary key back. |
 | **Proposed index name** | `{table}_{columns}_index`, lowercase, built from the physical table name (so it includes any table prefix). This is the name Laravel gives the index by default when the connection's `prefix_indexes` is on, as it is in Laravel's default config. |
 | **Kind** | `new index`, or `extend existing index <name> (<old columns>), chosen because it is <why>, to (<new columns>)`: replace that index with the proposed one, which starts with its columns. `<why>` says which of the indexes it could extend this one is: `used by the current plan` (EXPLAIN reports it as the `key` of the plan in the EXPLAIN summary, or among the indexes an `index_merge` reads), else `the longest prefix of the new index`, ties going to the one `with the most selective first column` (when the first columns are as selective, the tie goes to the alphabetically first and the Report says only `the longest prefix of the new index`). On InnoDB it ends with a warning when the old index, with the primary key appended, serves an order the new one does not (see [extending an existing index](#writing-the-migration-extending-an-existing-index)). |
 | **Reasons** | Symptoms found in the plan: `full scan` (`type` is `ALL`), `no index used` (no key, many rows examined), `filesort` (`Using filesort`), `temporary table` (`Using temporary`). |
 | **Note** | Zero or more. When a range column keeps the index from serving the `ORDER BY` or `GROUP BY`, this names the equality → sort → range alternative. db-hound can't know how selective the range is, so the choice is yours (see below). |
 | **EXPLAIN summary** | `type` (access type), `key` (index used, `—` for none), `rows` (rows examined), and `extras` (`Using filesort` and `Using temporary`) of the table in the current plan: the plan of the most impactful served Fingerprint. |
-| **Existing indexes on `<table>`** | Every index on the table: `name (columns)`, then `unique` when it is unique, its type when it is not a B-tree (for example `FULLTEXT`), and `invisible` when it is invisible. |
-| **Column types** | MySQL column type of each proposed column. |
 | **Impact** | Summed over the Fingerprints the index serves: `count`, `avg ms`, `max ms`, and `impact` = count × avg ms. |
 | **Served Fingerprints (N)** | Every Fingerprint the index would serve, highest impact first, as normalized SQL. |
 
@@ -396,9 +432,9 @@ Each entry has the connection, a reason (for example the SQL parser could not ha
 
 ### Reading a Suggestion
 
-1. **Start at the top.** Suggestions are ranked by impact (count × avg ms). The first ones save the most database time.
+1. **Start at the Summary.** It lists every Suggestion ranked by impact (count × avg ms); the first ones save the most database time. Each table's section then holds its Suggestions, under the same rank numbers. Read a table's Suggestions together, since they share its existing indexes.
 2. **Check the header.** Confirm with the engineer which environment the Report is from (**Connections**), how much traffic it covers (**Capture coverage**, **Fingerprints analyzed**), and whether the thresholds look right.
-3. **For each Suggestion, gather:**
+3. **For each Suggestion, gather** (the table, connection, row count, existing indexes and column types are in its table's section):
    - the table (its physical name, including any connection table prefix), the connection, and the **Proposed columns (in order)**: this is the index to create, and the order matters;
    - the **Kind**: `new index`, or `extend existing index`;
    - the **Existing indexes**: make sure the codebase's migrations agree with them. If they don't, ask the engineer, because production may have drifted from the migrations;

@@ -2,7 +2,7 @@
 title: Group the Report by table and add a one-screen summary
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: done
 ---
 
 ## Parent
@@ -21,11 +21,11 @@ Keep every field the PRD requires; this is a layout change. Update the README's 
 
 ## Acceptance criteria
 
-- [ ] Summary table lists every Suggestion with rank, table, columns, kind, reasons, impact, served count.
-- [ ] Each table's existing indexes and column types appear exactly once.
-- [ ] Tables are ordered by summed impact; Suggestions within a table by impact.
-- [ ] Renderer snapshot tests updated; no PRD-required field is lost.
-- [ ] README Report format section matches the new layout.
+- [x] Summary table lists every Suggestion with rank, table, columns, kind, reasons, impact, served count.
+- [x] Each table's existing indexes and column types appear exactly once.
+- [x] Tables are ordered by summed impact; Suggestions within a table by impact.
+- [x] Renderer snapshot tests updated; no PRD-required field is lost.
+- [x] README Report format section matches the new layout.
 
 ## Blocked by
 
