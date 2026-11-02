@@ -75,6 +75,7 @@ class DbHoundServiceProvider extends PackageServiceProvider
                     (array) $app->make('config')->get('database.connections', []),
                 ),
             ),
+            lowSelectivityShare: (float) $app->make('config')->get('db-hound.analysis.low_selectivity_share', Analyzer::LOW_SELECTIVITY_SHARE),
         ));
 
         $this->app->bind(AnalysisDrivers::class, fn (Application $app) => new AnalysisDrivers(

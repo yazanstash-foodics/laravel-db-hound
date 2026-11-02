@@ -68,6 +68,11 @@ function fakeDriver(array $plans, array $indexes = [], int $rows = 5000): Driver
                 ? ['id' => 'bigint unsigned', 'status' => 'varchar(20)', 'branch_id' => 'bigint unsigned']
                 : [];
         }
+
+        public function cardinality(string $table): array
+        {
+            return [];
+        }
     };
 }
 
@@ -221,6 +226,11 @@ it('lists a Fingerprint whose EXPLAIN fails as unparsed without the binding valu
         {
             return $this->inner->columnTypes($table);
         }
+
+        public function cardinality(string $table): array
+        {
+            return $this->inner->cardinality($table);
+        }
     };
 
     $result = (new Analyzer(analyzerEncrypter(), qualification: everyFingerprint()))->analyze(
@@ -274,6 +284,13 @@ it('lists a Fingerprint whose schema inspection fails as unparsed and still anal
             return $table === 'orders' ? ['status' => 'varchar(20)'] : ['email' => 'varchar(255)'];
         }
 
+        public function cardinality(string $table): array
+        {
+            $this->failOn('cardinality', $table);
+
+            return [];
+        }
+
         private function failOn(string $method, string $table): void
         {
             if ($method === $this->failing && $table === 'archive') {
@@ -300,7 +317,7 @@ it('lists a Fingerprint whose schema inspection fails as unparsed and still anal
         ->and($result->unparsed)->toHaveCount(1)
         ->and($result->unparsed[0]->sql)->toBe($broken)
         ->and($result->unparsed[0]->reason)->toBe('inspecting its tables failed (QueryException, SQLSTATE HY000)');
-})->with(['indexes', 'rowCount', 'columnTypes'])->with(['with a Sample' => true, 'without a Sample' => false]);
+})->with(['indexes', 'rowCount', 'columnTypes', 'cardinality'])->with(['with a Sample' => true, 'without a Sample' => false]);
 
 /**
  * A Driver that records every EXPLAIN it runs and reports a full scan of the
@@ -340,6 +357,11 @@ function recordingDriver(): Driver
         public function columnTypes(string $table): array
         {
             return ['status' => 'varchar(20)', 'branch_id' => 'bigint unsigned', 'note' => 'text'];
+        }
+
+        public function cardinality(string $table): array
+        {
+            return [];
         }
     };
 }
@@ -521,6 +543,11 @@ function typedDriver(): Driver
                 'branches' => ['id' => 'int', 'name' => 'varchar(50)', 'code' => 'char(3)'],
                 default => [],
             };
+        }
+
+        public function cardinality(string $table): array
+        {
+            return [];
         }
     };
 }

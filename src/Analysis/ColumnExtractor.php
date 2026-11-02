@@ -318,8 +318,8 @@ final class ColumnExtractor
         return match ($value) {
             'IN' => ($operand[0]['kind'] ?? null) === 'open' && $this->closing($operand, 0) === count($operand) - 1
                 && $this->constant(array_slice($operand, 1, -1)) && $this->inList($column, array_slice($operand, 1, -1), $chain),
-            'IS' => count($operand) === 1 && $operand[0]['value'] === 'NULL' && $this->equality($column, $chain)
-                || count($operand) === 1 && $operand[0]['value'] === 'NOT NULL' && $this->range($column, $chain),
+            'IS' => count($operand) === 1 && in_array($operand[0]['value'], ['NULL', 'NOT NULL'], true)
+                && $this->nullCheck($column, $operand[0]['value'] === 'NULL', $chain),
             'BETWEEN', 'LIKE' => $this->constant(array_values(array_filter($operand, fn (array $token) => ! $this->isAnd($token))))
                 && $this->range($column, $chain),
             default => false,
@@ -401,6 +401,29 @@ final class ColumnExtractor
     {
         $reference = $this->resolve($column['qualifier'], $column['column'], $chain);
         $reference?->addRange($this->spelled($reference, $column['column']));
+
+        return true;
+    }
+
+    /**
+     * `column IS NULL` (`$null`) or `column IS NOT NULL`.
+     *
+     * @param  array{qualifier: ?string, column: string, next: int}  $column
+     * @param  list<array<string, ?TableColumns>>  $chain
+     */
+    private function nullCheck(array $column, bool $null, array $chain): bool
+    {
+        $reference = $this->resolve($column['qualifier'], $column['column'], $chain);
+
+        if ($reference === null) {
+            return true;
+        }
+
+        if ($null) {
+            $reference->addNull($this->spelled($reference, $column['column']));
+        } else {
+            $reference->addNotNull($this->spelled($reference, $column['column']));
+        }
 
         return true;
     }
@@ -560,7 +583,10 @@ final class ColumnExtractor
             $column = $this->spelled($reference, $expression->column);
             $columns[] = $column;
 
-            if ($item instanceof OrderKeyword && ! in_array(['column' => $column, 'joinedTo' => null], $reference->equalities, true)) {
+            // A column an equality or IS NULL pins does not affect the order.
+            $pinned = in_array(['column' => $column, 'joinedTo' => null], $reference->equalities, true) || in_array($column, $reference->nulls, true);
+
+            if ($item instanceof OrderKeyword && ! $pinned) {
                 $directions[$item->type->name] = true;
             }
         }

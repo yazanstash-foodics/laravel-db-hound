@@ -42,22 +42,31 @@ final class Suggestion
     public array $notes = [];
 
     /**
+     * How far the served Fingerprints fix the order of the columns.
+     */
+    private ColumnOrder $order;
+
+    /**
      * @param  list<string>  $columns  proposed columns, in index order
      * @param  list<string>  $reasons
      * @param  list<Index>  $existingIndexes
      * @param  array<string, string>  $columnTypes  involved column => type
+     * @param  ?ColumnOrder  $order  how far the queries fix the order of `$columns` (exactly, when null)
      */
     public function __construct(
         public readonly string $connection,
         public readonly string $table,
-        public readonly array $columns,
+        public private(set) array $columns,
         public array $reasons,
         public readonly int $rowCount,
         public readonly array $existingIndexes,
         public readonly array $columnTypes,
         public readonly TableAccess $access,
         public readonly Plan $plan,
-    ) {}
+        ?ColumnOrder $order = null,
+    ) {
+        $this->order = $order ?? ColumnOrder::fixed($columns);
+    }
 
     public function indexName(): string
     {
@@ -66,7 +75,7 @@ final class Suggestion
 
     /**
      * The longest existing index the proposed one could replace: a strict
-     * left prefix of the proposed columns, a visible B-tree (dropping a
+     * left prefix of the proposed columns (in an order they allow), a visible B-tree (dropping a
      * FULLTEXT or SPATIAL index would break the queries it serves), not
      * unique (a longer index would no longer enforce the uniqueness), and
      * not among `$taken`.
@@ -81,13 +90,37 @@ final class Suggestion
             if ($index->servesLookups()
                 && ! $index->unique
                 && ! in_array($index->name, $taken, true)
-                && $index->isStrictLeftPrefixOf($this->columns)
+                && $index->isStrictLeftPrefixOf($this->order)
                 && ($extendable === null || count($index->columns) > count($extendable->columns))) {
                 $extendable = $index;
             }
         }
 
         return $extendable;
+    }
+
+    /**
+     * Replace the longest existing index that `extendable()` finds, putting
+     * the columns in its order.
+     *
+     * @param  list<string>  $taken  names of indexes other Suggestions already extend
+     */
+    public function extendExisting(array $taken = []): void
+    {
+        $this->extends = $this->extendable($taken);
+
+        if ($this->extends !== null) {
+            $this->narrow(ColumnOrder::fixed($this->extends->columns));
+        }
+    }
+
+    /**
+     * Also serve a Fingerprint whose candidate has the same columns: when
+     * its order fixes more of them, keep that stricter order.
+     */
+    public function constrain(ColumnOrder $order): void
+    {
+        $this->narrow($order);
     }
 
     public function averageMs(): float
@@ -134,22 +167,25 @@ final class Suggestion
 
     /**
      * Whether this Suggestion's index also serves `$other`'s: same table,
-     * and `$other`'s columns are a strict left prefix of this one's.
+     * and `$other`'s columns are a strict left prefix of this one's, in
+     * orders both allow.
      */
     public function contains(self $other): bool
     {
         return $other->connection === $this->connection
             && $other->table === $this->table
             && count($other->columns) < count($this->columns)
-            && array_slice($this->columns, 0, count($other->columns)) === $other->columns;
+            && $this->order->startingWith($other->order) !== null;
     }
 
     /**
      * Take over the Fingerprints, reasons and notes of a Suggestion this
-     * one's index also serves.
+     * one's index also serves, putting its columns first.
      */
     public function absorb(self $other): void
     {
+        $this->narrow($other->order);
+
         $this->flag($other->reasons);
 
         foreach ($other->notes as $note) {
@@ -159,5 +195,11 @@ final class Suggestion
         foreach ($other->served as $fingerprint => [$count, $totalMs, $maxMs]) {
             $this->serve($fingerprint, $count, $totalMs, $maxMs);
         }
+    }
+
+    private function narrow(ColumnOrder $prefix): void
+    {
+        $this->order = $this->order->startingWith($prefix) ?? $this->order;
+        $this->columns = $this->order->columns();
     }
 }

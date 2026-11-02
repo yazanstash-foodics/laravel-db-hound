@@ -9,7 +9,7 @@ namespace Foodics\DbHound\Analysis;
 final class TableColumns
 {
     /**
-     * Equality predicates (`=`, `<=>`, `IN (?)`, `IS NULL`). `joinedTo`
+     * Equality predicates (`=`, `<=>`, `IN (?)`). `joinedTo`
      * names the other table reference of a `column = column` predicate; the
      * column only narrows this table once that reference has been read.
      *
@@ -26,11 +26,27 @@ final class TableColumns
     public array $lists = [];
 
     /**
-     * Range predicates (`<`, `>`, `BETWEEN`, `LIKE`, `IS NOT NULL`).
+     * Range predicates (`<`, `>`, `BETWEEN`, `LIKE`).
      *
      * @var list<string>
      */
     public array $ranges = [];
+
+    /**
+     * `IS NULL` predicates: an equality to seek on, but a weak filter, since
+     * on a soft-delete column (`deleted_at IS NULL`) it matches nearly every row.
+     *
+     * @var list<string>
+     */
+    public array $nulls = [];
+
+    /**
+     * `IS NOT NULL` predicates: a range to seek on, and a weak filter, since
+     * it usually matches nearly every row.
+     *
+     * @var list<string>
+     */
+    public array $notNulls = [];
 
     /**
      * The GROUP BY (or, without one, ORDER BY) columns, when every one of
@@ -71,5 +87,15 @@ final class TableColumns
     public function addRange(string $column): void
     {
         $this->ranges[] = $column;
+    }
+
+    public function addNull(string $column): void
+    {
+        $this->nulls[] = $column;
+    }
+
+    public function addNotNull(string $column): void
+    {
+        $this->notNulls[] = $column;
     }
 }

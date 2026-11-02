@@ -37,4 +37,13 @@ interface Driver
      * @return array<string, string> column name => column type
      */
     public function columnTypes(string $table): array;
+
+    /**
+     * Estimated number of distinct values per column, for the columns the
+     * engine keeps statistics on (those that lead an index). The Analyzer
+     * estimates the others from their type.
+     *
+     * @return array<string, int> column name => distinct values
+     */
+    public function cardinality(string $table): array;
 }

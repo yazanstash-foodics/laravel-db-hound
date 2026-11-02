@@ -231,6 +231,7 @@ Every key in `config/db-hound.php`, with its environment variable and default. K
 | `analysis.min_max_ms` | `DB_HOUND_ANALYSIS_MIN_MAX_MS` | `500` | …or its slowest run took at least this many ms. |
 | `analysis.max_fingerprints` | `DB_HOUND_ANALYSIS_MAX_FINGERPRINTS` | `200` | Most Fingerprints explained per run, highest impact (count × avg ms) first. |
 | `analysis.min_table_rows` | `DB_HOUND_ANALYSIS_MIN_TABLE_ROWS` | `1000` | Tables with fewer rows (the `information_schema.TABLES` estimate) get no Suggestion, because MySQL scans them whatever their indexes. |
+| `analysis.low_selectivity_share` | `DB_HOUND_ANALYSIS_LOW_SELECTIVITY_SHARE` | `0.1` | An equality column whose values each match more than this share of the table's rows on average (1 / its index statistics `CARDINALITY`, known for columns that lead an index), so with fewer than 10 distinct values by default, is a weak filter. Booleans, enums, `IS NULL` and `IS NOT NULL` are always weak filters. Weak filters go after the selective equality columns and never lead an index; a query with only weak filters gets no Suggestion. |
 | `analysis.ignore.tables` | none | `['migrations', 'jobs', 'job_batches', 'failed_jobs', 'sessions', 'cache', 'cache_locks', 'telescope_*']` | Fingerprints touching these tables are never explained (names without the table prefix, `*` wildcards allowed). db-hound's own table is always ignored. |
 | `analysis.ignore.statements` | none | `['SHOW', 'SET']` | Fingerprints starting with one of these keywords are never explained. |
 | `analysis.ignore.schemas` | none | `['information_schema', 'performance_schema']` | Fingerprints reading a table of one of these schemas are never explained. |
@@ -326,7 +327,7 @@ select * from `orders` where `branch_id` = ? and `status` in (?) order by `creat
 | **Table** | The table to index, as MySQL names it: the physical name, including the connection's table `prefix` (`config/database.php`) when it has one. `tables.allow`/`deny` and `analysis.ignore.tables` take names without the prefix, but the Report shows the name the SQL used. |
 | **Connection** | The captured connection whose queries need the index. Write the migration for that connection's database. |
 | **Table rows (estimate)** | Row count from `information_schema.TABLES`. It is an estimate, but it is enough to judge how expensive the DDL will be. |
-| **Proposed columns (in order)** | Index columns in order: equality columns, then `IN` lists and range columns, then sort or group columns. **Keep this order.** |
+| **Proposed columns (in order)** | Index columns in order: selective equality columns (most distinct values first, by index statistics or the column type; ties and columns without an estimate alphabetically, unless another served query or the extended index needs them in another order), then weak filters (`IS NULL`, booleans, enums, columns with few distinct values; an `IS NOT NULL` only when nothing follows it), then `IN` lists and range columns, then sort or group columns. A weak filter never leads: without a selective equality before it, it is left out. **Keep this order.** |
 | **Proposed index name** | `{table}_{columns}_index`, lowercase, built from the physical table name (so it includes any table prefix). This is the name Laravel gives the index by default when the connection's `prefix_indexes` is on, as it is in Laravel's default config. |
 | **Kind** | `new index`, or `extend existing index <name> (<old columns>) to (<new columns>)`: replace that index with the proposed one, which starts with its columns. |
 | **Reasons** | Symptoms found in the plan: `full scan` (`type` is `ALL`), `no index used` (no key, many rows examined), `filesort` (`Using filesort`), `temporary table` (`Using temporary`). |
@@ -355,7 +356,7 @@ The Report ends with `## Unparsed queries` (`None.` when it is empty). It lists 
   ```
 ````
 
-Each entry has the connection, a reason (for example the SQL parser could not handle the query, `EXPLAIN` failed with an SQLSTATE, the query reads another database, or `cannot EXPLAIN without a Sample`), and the normalized SQL. Errors are reported by class and SQLSTATE only, because database error messages can contain binding values.
+Each entry has the connection, a reason (for example the SQL parser could not handle the query, `EXPLAIN` failed with an SQLSTATE, the query reads another database, the table is filtered only on low-selectivity predicates such as `deleted_at IS NULL` that an index would barely narrow, or `cannot EXPLAIN without a Sample`), and the normalized SQL. Errors are reported by class and SQLSTATE only, because database error messages can contain binding values.
 
 ## Dump format
 

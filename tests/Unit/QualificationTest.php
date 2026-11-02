@@ -53,6 +53,11 @@ function scanningDriver(array $rowCounts = [], int $rows = 5000): Driver
         {
             return ['status' => 'varchar(20)', 'branch_id' => 'bigint unsigned'];
         }
+
+        public function cardinality(string $table): array
+        {
+            return [];
+        }
     };
 }
 

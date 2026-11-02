@@ -32,25 +32,21 @@ final readonly class Index
 
     /**
      * Whether this index already serves `$columns`: it can serve lookups and
-     * `$columns` is a left prefix of its columns.
-     *
-     * @param  list<string>  $columns
+     * `$columns`, in an order they allow, is a left prefix of its columns.
      */
-    public function coversAsLeftPrefix(array $columns): bool
+    public function coversAsLeftPrefix(ColumnOrder $columns): bool
     {
         return $this->servesLookups()
-            && array_slice($this->columns, 0, count($columns)) === $columns;
+            && ColumnOrder::fixed($this->columns)->startingWith($columns) !== null;
     }
 
     /**
-     * Whether this index's columns start `$columns` and leave some out,
-     * so an index on `$columns` could replace it.
-     *
-     * @param  list<string>  $columns
+     * Whether this index's columns start `$columns` (in an order they
+     * allow) and leave some out, so an index on `$columns` could replace it.
      */
-    public function isStrictLeftPrefixOf(array $columns): bool
+    public function isStrictLeftPrefixOf(ColumnOrder $columns): bool
     {
-        return count($this->columns) < count($columns)
-            && array_slice($columns, 0, count($this->columns)) === $this->columns;
+        return count($this->columns) < count($columns->columns())
+            && $columns->startingWith(ColumnOrder::fixed($this->columns)) !== null;
     }
 }

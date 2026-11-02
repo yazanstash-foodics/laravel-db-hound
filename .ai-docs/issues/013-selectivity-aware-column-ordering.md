@@ -2,7 +2,7 @@
 title: Selectivity-aware column ordering (weak filters last, cardinality-ordered equality)
 labels: [ready-for-agent]
 type: AFK
-status: open
+status: done
 ---
 
 ## Parent
@@ -22,13 +22,20 @@ Evidence from the staging Report: #11 `transactions` should become `(merchant_id
 
 ## Acceptance criteria
 
-- [ ] `IS NULL` / `IS NOT NULL` predicates are classified as weak filters, never as leading equality columns.
-- [ ] Equality columns are ordered by descending cardinality; ties keep a deterministic order (alphabetical) so the same column set always produces the same candidate.
-- [ ] Boolean/`tinyint(1)` columns and columns under the configurable cardinality ratio are weak filters.
-- [ ] A candidate consisting only of weak filters is not suggested; the query is listed with reason "only low-selectivity predicates".
-- [ ] Unit tests (fake Driver with cardinality fixtures) reproduce staging cases #1, #4, #11 and #18 and assert the corrected output.
-- [ ] Integration test: a soft-deleted table with a selective `merchant_id` yields an index starting with `merchant_id`.
-- [ ] PRD "Column ordering" decision updated to describe weak filters and cardinality ordering.
+- [x] `IS NULL` / `IS NOT NULL` predicates are classified as weak filters, never as leading equality columns.
+- [x] Equality columns are ordered by descending cardinality; ties keep a deterministic order (alphabetical) so the same column set always produces the same candidate.
+- [x] Boolean/`tinyint(1)` columns and columns with too few distinct values (one value matching more than the configurable `analysis.low_selectivity_share` of the rows; see Review decisions) are weak filters.
+- [x] A candidate consisting only of weak filters is not suggested; the query is listed with reason "only low-selectivity predicates".
+- [x] Unit tests (fake Driver with cardinality fixtures) reproduce staging cases #1, #4, #11 and #18 and assert the corrected output.
+- [x] Integration test: a soft-deleted table with a selective `merchant_id` yields an index starting with `merchant_id`.
+- [x] PRD "Column ordering" decision updated to describe weak filters and cardinality ordering.
+
+## Review decisions
+
+- The weak-equality threshold is the share of rows one value matches (1 / `CARDINALITY`) above the configurable `analysis.low_selectivity_share` (default 0.1), not `CARDINALITY` / table rows: the per-row ratio made a tenant column such as `merchant_id` weak once its table grew past ~10,000 rows per merchant, dropping the very Suggestions #11 needs.
+- Weak filters never lead an index, also before a range or sort: with no selective seek column they are left out (`deleted_at IS NULL ORDER BY created_at` suggests `(created_at)`, staging #29). Multi-value `IN` lists are classified weak or selective like equalities.
+- The type heuristic (boolean 2, enum members) lives in the Analyzer's `Selectivity`, not the Driver; `MySqlDriver::cardinality` reads B-tree index statistics only (a FULLTEXT index's CARDINALITY is the table's rows), and schema metadata is looked up once per table per run.
+- Cardinality order is a preference within each block of equality columns: consolidation, dedupe and extend-existing match the block in any order, and the Suggestion takes the order another Fingerprint or the extended index needs.
 
 ## Blocked by
 

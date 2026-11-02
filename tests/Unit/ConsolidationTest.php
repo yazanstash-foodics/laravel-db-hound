@@ -51,6 +51,11 @@ function ordersDriver(array $indexes = []): Driver
                 'created_at' => 'timestamp',
             ] : [];
         }
+
+        public function cardinality(string $table): array
+        {
+            return [];
+        }
     };
 }
 
@@ -112,9 +117,35 @@ it('drops a candidate an existing index covers as a left prefix', function () {
         ->and($result->unparsed)->toBe([]);
 });
 
+it('drops a candidate an existing index covers with its equality columns in another order', function () {
+    $result = consolidate(
+        ['select * from `orders` where `branch_id` = ? and `status` = ?' => [10, 300.0, 50.0]],
+        [new Index('orders_status_branch_id_created_at_index', ['status', 'branch_id', 'created_at'], false)],
+    );
+
+    expect($result->suggestions)->toBe([])
+        ->and($result->unparsed)->toBe([]);
+});
+
+it('orders the equality columns of a candidate so another Fingerprint\'s index is its left prefix', function () {
+    $both = 'select * from `orders` where `status` = ? and `customer_id` = ? and `branch_id` = ?';
+    $status = 'select * from `orders` where `status` = ?';
+    $statusCustomer = 'select * from `orders` where `customer_id` = ? and `status` = ?';
+
+    $result = consolidate([
+        $both => [10, 100.0, 50.0],
+        $status => [10, 300.0, 50.0],
+        $statusCustomer => [10, 200.0, 50.0],
+    ]);
+
+    expect($result->suggestions)->toHaveCount(1)
+        ->and($result->suggestions[0]->columns)->toBe(['status', 'customer_id', 'branch_id'])
+        ->and($result->suggestions[0]->fingerprints)->toBe([$status, $statusCustomer, $both]);
+});
+
 it('keeps candidates with the same columns in a different order apart', function () {
-    $branchFirst = 'select * from `orders` where `branch_id` = ? and `status` = ?';
-    $statusFirst = 'select * from `orders` where `status` = ? and `branch_id` = ?';
+    $branchFirst = 'select * from `orders` where `branch_id` = ? and `status` > ?';
+    $statusFirst = 'select * from `orders` where `status` = ? and `branch_id` > ?';
 
     $result = consolidate([
         $branchFirst => [10, 300.0, 50.0],
@@ -200,7 +231,7 @@ it('extends an existing index that is a left prefix of the candidate', function 
 
 it('proposes a new index when no existing index is a left prefix of the candidate', function () {
     $result = consolidate(
-        ['select * from `orders` where `branch_id` = ? and `status` = ?' => [10, 300.0, 50.0]],
+        ['select * from `orders` where `branch_id` = ? and `status` > ?' => [10, 300.0, 50.0]],
         [new Index('idx_status', ['status'], false), new Index('idx_branch_customer', ['branch_id', 'customer_id'], false)],
     );
 
@@ -258,12 +289,12 @@ it('does not treat a FULLTEXT index as covering a candidate, since it cannot ser
 
 it('does not extend a FULLTEXT index, since dropping it would break MATCH ... AGAINST queries', function () {
     $result = consolidate(
-        ['select * from `orders` where `status` = ? and `branch_id` = ?' => [10, 300.0, 50.0]],
+        ['select * from `orders` where `status` = ? and `created_at` > ?' => [10, 300.0, 50.0]],
         [new Index('ft_status', ['status'], false, type: 'FULLTEXT')],
     );
 
     expect($result->suggestions)->toHaveCount(1)
-        ->and($result->suggestions[0]->columns)->toBe(['status', 'branch_id'])
+        ->and($result->suggestions[0]->columns)->toBe(['status', 'created_at'])
         ->and($result->suggestions[0]->extends)->toBeNull();
 });
 

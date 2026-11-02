@@ -27,12 +27,16 @@ final class Analyzer
 
     public const REASON_NEEDS_SAMPLE = 'cannot EXPLAIN without a Sample: the Fingerprint has a literal MySQL does not accept as a parameter';
 
+    /** Share of the rows one value of an equality column matches on average above which the column is a weak filter. */
+    public const LOW_SELECTIVITY_SHARE = 0.1;
+
     public function __construct(
         private readonly Encrypter $encrypter,
         private readonly ColumnExtractor $extractor = new ColumnExtractor,
         private readonly PlaceholderBindings $placeholders = new PlaceholderBindings,
         private readonly int $examinedRowsThreshold = 1000,
         public readonly Qualification $qualification = new Qualification,
+        private readonly float $lowSelectivityShare = self::LOW_SELECTIVITY_SHARE,
     ) {}
 
     /**
@@ -52,7 +56,8 @@ final class Analyzer
         $explained = 0;
 
         foreach ($this->qualification->select($queries) as $query) {
-            $driver = $resolved[$query->connection] ??= $drivers instanceof Driver ? $drivers : $drivers($query->connection);
+            // Schema metadata is looked up once per table for the whole run.
+            $driver = $resolved[$query->connection] ??= new RunScopedDriver($drivers instanceof Driver ? $drivers : $drivers($query->connection));
 
             // Writes are explained as the SELECT of the rows they touch.
             $shape = ExplainableQuery::from($query->sql);
@@ -96,13 +101,13 @@ final class Analyzer
                     $table = $reference->table;
                     $indexes = $driver->indexes($table);
 
-                    if ($this->alreadyIndexed($indexes, $candidate->columns)) {
+                    if ($this->alreadyIndexed($indexes, $candidate->order)) {
                         continue;
                     }
 
                     $key = $query->connection.'|'.$table.'|'.implode(',', $candidate->columns);
 
-                    $served[] = [$key, $reasons, $candidate->note, $suggestions[$key] ?? new Suggestion(
+                    $served[] = [$key, $reasons, $candidate, $suggestions[$key] ?? new Suggestion(
                         connection: $query->connection,
                         table: $table,
                         columns: $candidate->columns,
@@ -112,6 +117,7 @@ final class Analyzer
                         columnTypes: array_intersect_key($driver->columnTypes($table), array_flip($candidate->columns)),
                         access: $access,
                         plan: $plan,
+                        order: $candidate->order,
                     )];
                 }
             } catch (Throwable $e) {
@@ -120,9 +126,10 @@ final class Analyzer
                 continue;
             }
 
-            foreach ($served as [$key, $reasons, $note, $suggestion]) {
+            foreach ($served as [$key, $reasons, $candidate, $suggestion]) {
                 $suggestions[$key] ??= $suggestion;
-                $suggestions[$key]->flag($reasons, $note);
+                $suggestions[$key]->constrain($candidate->order);
+                $suggestions[$key]->flag($reasons, $candidate->note);
                 $suggestions[$key]->serve($query->sql, $query->count, $query->totalMs, $query->maxMs);
             }
         }
@@ -135,7 +142,7 @@ final class Analyzer
 
         foreach ($ranked as $suggestion) {
             $key = $suggestion->connection.'|'.$suggestion->table;
-            $suggestion->extends = $suggestion->extendable($taken[$key] ?? []);
+            $suggestion->extendExisting($taken[$key] ?? []);
 
             if ($suggestion->extends !== null) {
                 $taken[$key][] = $suggestion->extends->name;
@@ -147,7 +154,8 @@ final class Analyzer
 
     /**
      * Fold each Suggestion into one whose index also serves it (it is a
-     * left prefix of that one's columns), so a table gets one index instead
+     * left prefix of that one's columns, equality columns in any order; the
+     * longer one takes that order), so a table gets one index instead
      * of several overlapping ones. A Suggestion several others contain goes
      * to the one with the most impact.
      *
@@ -284,7 +292,12 @@ final class Analyzer
                 continue;
             }
 
-            $candidate = IndexCandidate::for($reference, $before, $position === $driving);
+            $selectivity = new Selectivity(
+                $driver->columnTypes($reference->table),
+                $driver->cardinality($reference->table),
+                $this->lowSelectivityShare,
+            );
+            $candidate = IndexCandidate::for($reference, $before, $position === $driving, $selectivity);
 
             if ($candidate === null) {
                 if ($reference->hasUnindexablePredicates || $extracted->hasUnresolvedColumns) {
@@ -294,6 +307,17 @@ final class Analyzer
                         $reference->table,
                     ));
                 }
+
+                continue;
+            }
+
+            if ($candidate->onlyWeak) {
+                $unparsed[] = new UnparsedQuery($connection, $fingerprint, sprintf(
+                    '%s on `%s`, but it has only low-selectivity predicates (%s)',
+                    implode(', ', $reasons),
+                    $reference->table,
+                    implode(', ', array_map(fn (string $column) => '`'.$column.'`', $candidate->columns)),
+                ));
 
                 continue;
             }
@@ -369,9 +393,8 @@ final class Analyzer
 
     /**
      * @param  list<Index>  $indexes
-     * @param  list<string>  $columns
      */
-    private function alreadyIndexed(array $indexes, array $columns): bool
+    private function alreadyIndexed(array $indexes, ColumnOrder $columns): bool
     {
         foreach ($indexes as $index) {
             if ($index->coversAsLeftPrefix($columns)) {

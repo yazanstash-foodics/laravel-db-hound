@@ -185,15 +185,25 @@ final class MySqlDriver implements Driver
      */
     private function firstRow(PDO $session, string $query, array $bindings = []): array
     {
+        return $this->allRows($session, $query, $bindings)[0] ?? [];
+    }
+
+    /**
+     * @param  array<mixed>  $bindings
+     * @return list<array<string, mixed>>
+     */
+    private function allRows(PDO $session, string $query, array $bindings = []): array
+    {
         $start = microtime(true);
         $statement = $session->prepare($query);
         $this->db->bindValues($statement, $this->db->prepareBindings($bindings));
         $statement->execute();
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        /** @var list<array<string, mixed>> $rows */
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
         $statement->closeCursor();
         $this->db->logQuery($query, $bindings, round((microtime(true) - $start) * 1000, 2));
 
-        return is_array($row) ? $row : [];
+        return $rows;
     }
 
     /**
@@ -341,6 +351,38 @@ final class MySqlDriver implements Driver
         }
 
         return $types;
+    }
+
+    /**
+     * The index statistics' CARDINALITY of each column that leads a B-tree
+     * index (a later column's counts the distinct prefixes, not its own
+     * values; a FULLTEXT or SPATIAL index's counts the table's rows), the
+     * most distinct of them when several indexes start with it.
+     */
+    public function cardinality(string $table): array
+    {
+        $rows = $this->onOneSession(fn (PDO $session) => $this->withFreshStatistics($session, fn () => $this->allRows(
+            $session,
+            "SELECT COLUMN_NAME, CARDINALITY FROM information_schema.STATISTICS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND SEQ_IN_INDEX = 1
+               AND INDEX_TYPE NOT IN ('FULLTEXT', 'SPATIAL')",
+            [$table],
+        )));
+
+        $cardinality = [];
+
+        foreach ($rows as $row) {
+            $row = array_change_key_case($row, CASE_UPPER);
+            $distinct = (int) ($row['CARDINALITY'] ?? 0);
+
+            // No statistics yet, or an expression index (MySQL 8.0.13+) on no column.
+            if ($distinct > 0 && $row['COLUMN_NAME'] !== null) {
+                $column = (string) $row['COLUMN_NAME'];
+                $cardinality[$column] = max($distinct, $cardinality[$column] ?? 0);
+            }
+        }
+
+        return $cardinality;
     }
 
     /**
