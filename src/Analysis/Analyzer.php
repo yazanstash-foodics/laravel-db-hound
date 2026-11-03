@@ -64,6 +64,8 @@ final class Analyzer
         /** @var list<UnsuggestedQuery> $skippable entries of $unsuggested for a table with only low-selectivity predicates, or none */
         $skippable = [];
         $resolved = [];
+        /** @var array<string, array<string, true>> $read  connection => the tables of its default database the explained plans read */
+        $read = [];
 
         /** @var array<int, FingerprintOutcome> $outcomes  object id => outcome */
         $outcomes = [];
@@ -126,6 +128,10 @@ final class Analyzer
 
             $outcomes[spl_object_id($query)] = FingerprintOutcome::Explained;
 
+            foreach ($this->planTables($shape->sql, $plan, $driver) as $table) {
+                $read[$query->connection][$table] = true;
+            }
+
             // Every table is inspected before the Fingerprint demands any index,
             // so a failed lookup leaves no Suggestion half-served.
             $small = false;
@@ -162,7 +168,127 @@ final class Analyzer
             }
         }
 
-        return new AnalysisResult($ranked, self::distinct(self::withoutServed($unsuggested, $skippable, $ranked)), FingerprintAccounting::tally(array_values($outcomes)));
+        return new AnalysisResult(
+            $ranked,
+            self::distinct(self::withoutServed($unsuggested, $skippable, $ranked)),
+            FingerprintAccounting::tally(array_values($outcomes)),
+            $this->redundant($resolved, $read, $ranked),
+        );
+    }
+
+    /**
+     * The tables of the connection's default database the plan reads, by
+     * their names in the query (EXPLAIN names a table by its alias): none
+     * when the SQL cannot be read, and never a derived table.
+     *
+     * @return list<string>
+     */
+    private function planTables(string $sql, Plan $plan, Driver $driver): array
+    {
+        $names = array_unique(array_map(
+            fn (TableAccess $access) => $access->table,
+            array_filter($plan->accesses, fn (TableAccess $access) => ! $access->derived && ! str_starts_with($access->table, '<')),
+        ));
+
+        if ($names === []) {
+            return [];
+        }
+
+        try {
+            $extracted = $this->extractor->extract($sql, fn (string $table) => array_keys($driver->columnTypes($table)));
+        } catch (Throwable) {
+            return [];
+        }
+
+        $tables = [];
+
+        foreach ($names as $name) {
+            if ($extracted->isDerived($name)) {
+                continue;
+            }
+
+            foreach ($extracted->named($name) as $reference) {
+                if ($reference->database === null) {
+                    $tables[] = $reference->table;
+                }
+            }
+        }
+
+        return array_values(array_unique($tables));
+    }
+
+    /**
+     * The redundant existing indexes of the tables the run's explained plans
+     * read, through any access, of at least the table rows threshold, by
+     * table, then index name: a table too small for a Suggestion is too
+     * small for its indexes to matter. One a Suggestion extends is left out,
+     * since the extension replaces it anyway: that Suggestion says so instead.
+     *
+     * @param  array<string, RunScopedDriver>  $drivers  connection => its Driver for the run
+     * @param  array<string, array<string, true>>  $read  connection => the tables its explained plans read
+     * @param  list<Suggestion>  $suggestions
+     * @return list<RedundantIndex>
+     */
+    private function redundant(array $drivers, array $read, array $suggestions): array
+    {
+        $extending = [];
+
+        foreach ($suggestions as $suggestion) {
+            if ($suggestion->extends !== null) {
+                $extending[$suggestion->connection."\0".$suggestion->table."\0".$suggestion->extends->name] = $suggestion;
+            }
+        }
+
+        $redundant = [];
+
+        foreach ($read as $connection => $tables) {
+            $driver = $drivers[$connection];
+
+            foreach (array_keys($tables) as $table) {
+                $table = (string) $table;
+
+                try {
+                    if (! $this->qualification->admitsTableRows($driver->rowCount($table))) {
+                        continue;
+                    }
+
+                    $indexes = $driver->indexes($table);
+                    $primaryKey = PrimaryKey::of($indexes, $driver->engine($table));
+                } catch (Throwable) {
+                    // A table whose rows or engine cannot be looked up got no Suggestion either.
+                    continue;
+                }
+
+                foreach (RedundantIndex::among((string) $connection, $table, $indexes, $primaryKey) as $entry) {
+                    $suggestion = $extending[$entry->connection."\0".$table."\0".$entry->redundant->name] ?? null;
+
+                    if ($suggestion === null) {
+                        $redundant[] = $entry;
+
+                        continue;
+                    }
+
+                    $suggestion->flag([], sprintf(
+                        '%s, which this Suggestion replaces, is also %s %s: it is not listed under "Redundant existing indexes"',
+                        self::indexName($entry->redundant),
+                        $entry->exact ? 'an exact duplicate of' : 'a left prefix of',
+                        self::indexName($entry->covering),
+                    ));
+                }
+            }
+        }
+
+        usort($redundant, fn (RedundantIndex $a, RedundantIndex $b) => [$a->table, $a->redundant->name, $a->connection] <=> [$b->table, $b->redundant->name, $b->connection]);
+
+        return $redundant;
+    }
+
+    /**
+     * An index as the Report names it: `name` (`column`, …).
+     */
+    private static function indexName(Index $index): string
+    {
+        return '`'.$index->name.'` ('.self::columnList($index->columns).')';
     }
 
     /**

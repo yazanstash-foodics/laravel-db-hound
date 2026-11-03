@@ -5,6 +5,7 @@ use Foodics\DbHound\Analysis\FingerprintAccounting;
 use Foodics\DbHound\Analysis\FingerprintOutcome;
 use Foodics\DbHound\Analysis\Index;
 use Foodics\DbHound\Analysis\Plan;
+use Foodics\DbHound\Analysis\RedundantIndex;
 use Foodics\DbHound\Analysis\Suggestion;
 use Foodics\DbHound\Analysis\TableAccess;
 use Foodics\DbHound\Analysis\UnsuggestedBecause;
@@ -54,6 +55,7 @@ it('renders the header, the summary, each table with its context and Suggestions
 - **Suggestions:** 1
 - **Skipped queries:** 2
 - **Unparsed queries:** 1
+- **Redundant existing indexes:** 0
 
 ## Summary
 
@@ -126,6 +128,10 @@ select `id` from `orders` where `status` = ? limit 10
   ```sql
   select * from `orders` where `archived_on` = ?
   ```
+
+## Redundant existing indexes
+
+None.
 
 MD);
 });
@@ -307,6 +313,7 @@ it('summarizes every Suggestion in one table right after the header', function (
 
     expect($markdown)->toContain(<<<'MD'
 - **Unparsed queries:** 0
+- **Redundant existing indexes:** 0
 
 ## Summary
 
@@ -393,6 +400,7 @@ MD)
             '## `orders` (reporting)',
             '## Skipped queries',
             '## Unparsed queries',
+            '## Redundant existing indexes',
         ]);
 });
 
@@ -460,4 +468,37 @@ it('prints no warning when no threshold was relaxed', function () {
 
     expect($markdown)->toStartWith("# db-hound Report\n\n- **Generated at:**")
         ->not->toContain('Warning');
+});
+
+it('lists redundant existing indexes last, each with the index covering it and the caveats before dropping it', function () {
+    $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult([], [], redundant: [
+        new RedundantIndex('mysql', 'orders', new Index('orders_merchant_id_index', ['merchant_id'], false), new Index('orders_merchant_id_status_index', ['merchant_id', 'status'], false), false, ['merchant_id', 'id']),
+        new RedundantIndex('mysql', 'payments', new Index('payments_reference_index', ['reference'], false), new Index('payments_reference_unique', ['reference'], true), true),
+        new RedundantIndex('mysql', 'payments', new Index('reference', ['reference'], false), new Index('payments_reference_index', ['reference'], false), true),
+    ]));
+
+    expect($markdown)->toContain("- **Unparsed queries:** 0\n- **Redundant existing indexes:** 3\n")
+        ->and($markdown)->toEndWith(<<<'MD'
+## Unparsed queries
+
+None.
+
+## Redundant existing indexes
+
+- **mysql** — `orders`: `orders_merchant_id_index` (`merchant_id`) is a left prefix of `orders_merchant_id_status_index` (`merchant_id`, `status`), which serves every lookup it does.
+  - **Primary key order:** with the primary key InnoDB appends, `orders_merchant_id_index` also serves (`merchant_id`, `id`) and `orders_merchant_id_status_index` does not: before dropping it, check that no query sorts or seeks on `id` right after `merchant_id` (e.g. `ORDER BY merchant_id, id`).
+  - **Foreign keys:** MySQL needs an index starting with a foreign key's columns. `orders_merchant_id_status_index` starts with every column of `orders_merchant_id_index`, so it can back any foreign key `orders_merchant_id_index` backs, but verify the table's foreign key constraints before dropping it. db-hound never drops an index.
+- **mysql** — `payments`: `payments_reference_index` (`reference`) is an exact duplicate of `payments_reference_unique` (`reference`) unique, which serves every lookup it does.
+  - **Foreign keys:** MySQL needs an index starting with a foreign key's columns. `payments_reference_unique` starts with every column of `payments_reference_index`, so it can back any foreign key `payments_reference_index` backs, but verify the table's foreign key constraints before dropping it. db-hound never drops an index.
+- **mysql** — `payments`: `reference` (`reference`) is an exact duplicate of `payments_reference_index` (`reference`), which serves every lookup it does.
+  - **Foreign keys:** MySQL needs an index starting with a foreign key's columns. `payments_reference_index` starts with every column of `reference`, so it can back any foreign key `reference` backs, but verify the table's foreign key constraints before dropping it. db-hound never drops an index.
+
+MD);
+});
+
+it('says None. when no existing index is redundant', function () {
+    $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult([], []));
+
+    expect($markdown)->toContain("- **Redundant existing indexes:** 0\n")
+        ->toEndWith("## Redundant existing indexes\n\nNone.\n");
 });

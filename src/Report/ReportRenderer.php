@@ -6,6 +6,7 @@ use DateTimeInterface;
 use Foodics\DbHound\Analysis\AnalysisResult;
 use Foodics\DbHound\Analysis\FingerprintAccounting;
 use Foodics\DbHound\Analysis\Index;
+use Foodics\DbHound\Analysis\RedundantIndex;
 use Foodics\DbHound\Analysis\Suggestion;
 use Foodics\DbHound\Analysis\UnsuggestedQuery;
 
@@ -37,8 +38,48 @@ final class ReportRenderer
         array_push($lines, ...$this->unsuggested('Skipped queries', $result->skipped));
         $lines[] = '';
         array_push($lines, ...$this->unsuggested('Unparsed queries', $result->unparsed));
+        $lines[] = '';
+        array_push($lines, ...$this->redundant($result->redundant));
 
         return implode("\n", $lines)."\n";
+    }
+
+    /**
+     * The existing indexes another one on the same table covers, each with
+     * that one and the caveats before dropping it; `None.` when empty.
+     *
+     * @param  list<RedundantIndex>  $redundant
+     * @return list<string>
+     */
+    private function redundant(array $redundant): array
+    {
+        $lines = ['## Redundant existing indexes', ''];
+
+        if ($redundant === []) {
+            $lines[] = 'None.';
+        }
+
+        foreach ($redundant as $entry) {
+            $old = $entry->redundant;
+            $new = $entry->covering;
+
+            $lines[] = "- **{$entry->connection}** — `{$entry->table}`: {$this->indexLabel($old)} is "
+                .($entry->exact ? 'an exact duplicate of' : 'a left prefix of')
+                ." {$this->indexLabel($new)}, which serves every lookup it does.";
+
+            if ($entry->lostOrder !== null) {
+                $key = array_slice($entry->lostOrder, count($old->columns));
+
+                $lines[] = "  - **Primary key order:** with the primary key InnoDB appends, `{$old->name}` also serves ({$this->columns($entry->lostOrder)}) and `{$new->name}` does not: "
+                    ."before dropping it, check that no query sorts or seeks on {$this->columns($key)} right after {$this->columns($old->columns)} "
+                    .'(e.g. `ORDER BY '.implode(', ', [$old->columns[array_key_last($old->columns)], ...$key]).'`).';
+            }
+
+            $lines[] = "  - **Foreign keys:** MySQL needs an index starting with a foreign key's columns. `{$new->name}` starts with every column of `{$old->name}`, "
+                ."so it can back any foreign key `{$old->name}` backs, but verify the table's foreign key constraints before dropping it. db-hound never drops an index.";
+        }
+
+        return $lines;
     }
 
     /**
@@ -122,6 +163,7 @@ final class ReportRenderer
             '- **Suggestions:** '.count($result->suggestions),
             '- **Skipped queries:** '.count($result->skipped),
             '- **Unparsed queries:** '.count($result->unparsed),
+            '- **Redundant existing indexes:** '.count($result->redundant),
         ];
     }
 
@@ -363,7 +405,16 @@ final class ReportRenderer
 
     private function index(Index $index): string
     {
-        return "- `{$index->name}` ({$this->columns($index->columns)})"
+        return '- '.$this->indexLabel($index);
+    }
+
+    /**
+     * An index as the Report names it: its name and columns, then `unique`
+     * when it is unique, its type when it is not a B-tree, and `invisible`.
+     */
+    private function indexLabel(Index $index): string
+    {
+        return "`{$index->name}` ({$this->columns($index->columns)})"
             .($index->unique ? ' unique' : '')
             .(strtoupper($index->type) === 'BTREE' ? '' : ' '.strtoupper($index->type))
             .($index->visible ? '' : ' invisible');

@@ -11,6 +11,8 @@ final readonly class Index
      * @param  list<string>  $columns  in index order
      * @param  string  $type  as `information_schema.STATISTICS.INDEX_TYPE` reports it (BTREE, FULLTEXT, SPATIAL, HASH)
      * @param  bool  $visible  false for an index the optimizer ignores (MySQL invisible index)
+     * @param  array<string, int>  $prefixLengths  column => length, for a column indexed on a prefix of its values (`information_schema.STATISTICS.SUB_PART`)
+     * @param  list<string>  $descending  the columns whose key part is stored in descending order (`information_schema.STATISTICS.COLLATION` 'D', MySQL 8.0+)
      */
     public function __construct(
         public string $name,
@@ -18,7 +20,40 @@ final readonly class Index
         public bool $unique,
         public string $type = 'BTREE',
         public bool $visible = true,
+        public array $prefixLengths = [],
+        public array $descending = [],
     ) {}
+
+    /**
+     * The index's key parts in order, to compare with another index's: each
+     * column, with its prefix length when only a prefix of its values is
+     * indexed (`name(10)`). A functional key part, which MySQL reports
+     * without a column (''), is this index's own and matches no other's.
+     *
+     * @return list<string>
+     */
+    public function keyParts(): array
+    {
+        return array_map(
+            fn (string $column, int $position) => match (true) {
+                $column === '' => "\0{$this->name}\0{$position}",
+                isset($this->prefixLengths[$column]) => "{$column}({$this->prefixLengths[$column]})",
+                default => $column,
+            },
+            $this->columns,
+            array_keys($this->columns),
+        );
+    }
+
+    /**
+     * Whether each key part, in order, is stored in descending order.
+     *
+     * @return list<bool>
+     */
+    public function directions(): array
+    {
+        return array_map(fn (string $column) => $column !== '' && in_array($column, $this->descending, true), $this->columns);
+    }
 
     public function isPrimary(): bool
     {

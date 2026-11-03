@@ -266,6 +266,7 @@ The Report is Markdown with a fixed structure. It contains only normalized SQL (
 - **Suggestions:** 3
 - **Skipped queries:** 2
 - **Unparsed queries:** 1
+- **Redundant existing indexes:** 1
 ```
 
 | Field | Meaning |
@@ -280,6 +281,7 @@ The Report is Markdown with a fixed structure. It contains only normalized SQL (
 | **Suggestions** | Number of Suggestions below. |
 | **Skipped queries** | Number of entries in the "Skipped queries" section. |
 | **Unparsed queries** | Number of entries in the "Unparsed queries" section. |
+| **Redundant existing indexes** | Number of entries in the "Redundant existing indexes" section. |
 
 When any qualification threshold (Fingerprint count, average or max latency, Table rows) is looser than the package default, a warning opens the Report, above the header, naming each relaxed threshold next to its default:
 
@@ -390,7 +392,7 @@ Each Suggestion's fields:
 | **Proposed index name** | `{table}_{columns}_index`, lowercase, built from the physical table name (so it includes any table prefix). This is the name Laravel gives the index by default when the connection's `prefix_indexes` is on, as it is in Laravel's default config. |
 | **Kind** | `new index`, or `extend existing index <name> (<old columns>), chosen because it is <why>, to (<new columns>)`: replace that index with the proposed one, which starts with its columns. `<why>` says which of the indexes it could extend this one is: `used by the current plan` (EXPLAIN reports it as the `key` of the plan in the EXPLAIN summary, or among the indexes an `index_merge` reads), else `the longest prefix of the new index`, ties going to the one `with the most selective first column` (when the first columns are as selective, the tie goes to the alphabetically first and the Report says only `the longest prefix of the new index`). On InnoDB it ends with a warning when the old index, with the primary key appended, serves an order the new one does not (see [extending an existing index](#writing-the-migration-extending-an-existing-index)). |
 | **Reasons** | Symptoms found in the plan: `full scan` (`type` is `ALL`), `no index used` (no key, many rows examined), `filesort` (`Using filesort`), `temporary table` (`Using temporary`), `partial index use` (a `ref` or `range` access seeks on only the first parts of its index, `used_key_parts`, and checks other predicates of the table, such as an `IN` list, an `IS NULL` or a range on a later key part an unconstrained column blocks, on each row it reads; not when the new index would break an `ORDER BY` that index serves without a filesort, nor when the predicates it checks are only weak filters that would not extend that index after every column it seeks on). |
-| **Note** | Zero or more. When a range column keeps the index from serving the `ORDER BY` or `GROUP BY`, this names the equality → sort → range alternative (for a `partial index use` whose current index serves the sort, it says the new index adds the filesort or temporary table, and names keeping that index as the alternative). db-hound can't know how selective the range is, so the choice is yours (see below). When a column frequent UPDATEs write was left out, this names it and each UPDATE Fingerprint writing it (its first 200 characters), with how often it ran. When another Suggestion was folded into this one through a leading column that finds only a handful of rows, this names its Fingerprints (their first 200 characters), the columns their own index would have had, and the predicates they check on the rows that column finds. |
+| **Note** | Zero or more. When a range column keeps the index from serving the `ORDER BY` or `GROUP BY`, this names the equality → sort → range alternative (for a `partial index use` whose current index serves the sort, it says the new index adds the filesort or temporary table, and names keeping that index as the alternative). db-hound can't know how selective the range is, so the choice is yours (see below). When a column frequent UPDATEs write was left out, this names it and each UPDATE Fingerprint writing it (its first 200 characters), with how often it ran. When another Suggestion was folded into this one through a leading column that finds only a handful of rows, this names its Fingerprints (their first 200 characters), the columns their own index would have had, and the predicates they check on the rows that column finds. When the index it extends is itself redundant (an exact duplicate or a left prefix of another existing index), this says so: the extension replaces it, so it is not listed under "Redundant existing indexes". |
 | **EXPLAIN summary** | `type` (access type), `key` (index used, `—` for none), `rows` (rows examined), and `extras` (`Using filesort` and `Using temporary`) of the table in the current plan: the plan of the most impactful served Fingerprint. |
 | **Impact** | Summed over the Fingerprints the index serves: `count`, `avg ms`, `max ms`, and `impact` = count × avg ms. |
 | **Served Fingerprints (N)** | Every Fingerprint the index would serve, highest impact first, as normalized SQL. |
@@ -404,7 +406,7 @@ Suggestions are already **consolidated** and **deduplicated**:
 
 ### Skipped and unparsed queries
 
-The Report ends with two sections listing Fingerprints that need attention but got no Suggestion, so nothing is silently dropped: `## Skipped queries`, then `## Unparsed queries` (each `None.` when it is empty). Each entry has the connection, a reason and the normalized SQL:
+After the table sections come two sections listing Fingerprints that need attention but got no Suggestion, so nothing is silently dropped: `## Skipped queries`, then `## Unparsed queries` (each `None.` when it is empty). Each entry has the connection, a reason and the normalized SQL:
 
 ````markdown
 ## Skipped queries
@@ -441,6 +443,34 @@ The Report ends with two sections listing Fingerprints that need attention but g
 - some columns of the query could not be attributed to a table (a reason ending with `(some columns of the query could not be attributed to a table)`), whatever else the table is filtered on: the column it cannot place may be the one an index needs.
 
 A Fingerprint appears at most once per reason, however many of its table accesses show it (a self-join whose table references share a name, for example). A full scan of a derived table (a subquery in `FROM`, such as Laravel's `laravel_table` or `latestOfMany`) is never listed: db-hound analyzes the tables its query reads instead, and the tables of subqueries in the `SELECT` list (`withCount`, `withSum`), in `WHERE` (a `whereHas` `EXISTS`, even inside an `OR`) or `HAVING` and those MySQL evaluates once (`select exists(…)`). A table filtered only on low-selectivity predicates, or on none, is listed only when no Suggestion serves the query: the `merchants` around a `whereHas` on `adjustments`, filtered on `deleted_at IS NULL` alone, is not listed when `adjustments` gets an index. Every skipped or unparsed Fingerprint is still counted once in the **Fingerprint accounting** (a skipped one was explained). Errors are reported by class and SQLSTATE only, because database error messages can contain binding values.
+
+### Redundant existing indexes
+
+The Report ends with `## Redundant existing indexes` (`None.` when it is empty): existing indexes that another index on the same table already covers, so they cost every write and serve no lookup the other one does not. Each entry names the connection, the table, the redundant index and the index covering it, then the caveats to check before dropping it:
+
+````markdown
+## Redundant existing indexes
+
+- **mysql** — `orders`: `orders_merchant_id_index` (`merchant_id`) is a left prefix of `orders_merchant_id_status_index` (`merchant_id`, `status`), which serves every lookup it does.
+  - **Primary key order:** with the primary key InnoDB appends, `orders_merchant_id_index` also serves (`merchant_id`, `id`) and `orders_merchant_id_status_index` does not: before dropping it, check that no query sorts or seeks on `id` right after `merchant_id` (e.g. `ORDER BY merchant_id, id`).
+  - **Foreign keys:** MySQL needs an index starting with a foreign key's columns. `orders_merchant_id_status_index` starts with every column of `orders_merchant_id_index`, so it can back any foreign key `orders_merchant_id_index` backs, but verify the table's foreign key constraints before dropping it. db-hound never drops an index.
+````
+
+An index is redundant when it is:
+
+- an **exact duplicate**: another index of the same type has the same columns in the same order. When one of them is unique or the primary key, the other one is listed; when neither is, the one whose name sorts last is listed and the first one is kept;
+- a **left prefix**: its columns are a strict left prefix of the declared columns of another B-tree index, as `(merchant_id)` is of `(merchant_id, status)`.
+
+A column indexed on a prefix of its values (`code(4)`) matches only the same prefix of it, and a functional key part (`(lower(status))`) matches none. The key parts compared must run in the same directions, or all in reverse (a backward scan reads those): `(merchant_id, created_at DESC)` serves `ORDER BY merchant_id, created_at DESC`, which neither `(merchant_id, created_at)` nor `(merchant_id, created_at, status)` does, so it is not listed against them.
+
+Only a visible, non-unique index can be listed, and only a visible one covers it: the primary key and unique indexes enforce a constraint, FULLTEXT and SPATIAL indexes serve other lookups than a B-tree's, and an invisible index serves none. Of several indexes covering one, the entry names the one with the most columns (then the primary key, a unique one, the first by name): the one to keep when every listed index is dropped. An index a Suggestion extends is not listed, since the extension replaces it anyway: that Suggestion carries a Note saying so instead.
+
+| Field | Meaning |
+| --- | --- |
+| **Primary key order** | Only on InnoDB, when the covering index does not hold the order the redundant one holds with the primary key InnoDB appends to every secondary index: `(merchant_id)` is ordered by `(merchant_id, id)`, `(merchant_id, status)` is not. Columns are compared as declared, so a query relying on that order (`WHERE merchant_id = ? ORDER BY id`) gets a filesort once the redundant index is gone. If one does, keep the index. |
+| **Foreign keys** | MySQL needs an index starting with a foreign key's columns. The covering index starts with all of them, so MySQL lets it take over, but check the table's foreign key constraints before dropping the index. |
+
+Only the tables the run's explained plans read are covered (through any access, a primary key lookup included; tables of the connection's default database, with at least the Table rows threshold), not the whole schema. db-hound never drops an index: write the migration with the engineer, as for a Suggestion.
 
 ## Dump format
 
@@ -571,6 +601,15 @@ Check **Table rows (estimate)** before you choose how to run the migration:
 
 - For tables with millions of rows or heavy write traffic, recommend running the change at low traffic, or with an online schema-change tool (`gh-ost`, `pt-online-schema-change`) or the team's own DDL process, and keep the Laravel migration in step with it. Raise this with the engineer instead of deciding alone.
 - Set a short `lock_wait_timeout` for the session, so that a blocked metadata lock fails fast instead of queuing traffic behind it.
+
+### Dropping a redundant index
+
+Entries under "Redundant existing indexes" are cleanup candidates, not Suggestions: treat them as lower priority and go through each with the engineer.
+
+- Check the codebase's migrations for the index and for foreign keys on its columns (`foreignId()->constrained()` creates both). MySQL lets the covering index take over a foreign key, since it starts with the same columns, but confirm the constraint exists as you expect first.
+- When the entry has a **Primary key order** caveat, search for queries that filter on the index's columns and sort by the primary key (`latest('id')`, `orderBy('id')`, cursor pagination) before dropping it.
+- Check for index hints (`USE INDEX`, `FORCE INDEX`) or raw SQL naming the index.
+- Drop it in its own migration (`$table->dropIndex('…')`), with a `down()` that recreates it, and run it like any other DDL on a large table (see [Large tables](#large-tables-online-ddl)).
 
 ### Using a Dump
 

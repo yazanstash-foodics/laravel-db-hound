@@ -322,12 +322,23 @@ final class MySqlDriver implements Driver
             $grouped[$name]['type'] = strtoupper((string) ($row['INDEX_TYPE'] ?? 'BTREE'));
             $grouped[$name]['visible'] = strtoupper((string) ($row['IS_VISIBLE'] ?? 'YES')) !== 'NO'
                 && strtoupper((string) ($row['IGNORED'] ?? 'NO')) !== 'YES';
+            $grouped[$name]['prefixLengths'] ??= [];
+            $grouped[$name]['descending'] ??= [];
+
+            if (($row['SUB_PART'] ?? null) !== null) {
+                $grouped[$name]['prefixLengths'][(string) $row['COLUMN_NAME']] = (int) $row['SUB_PART'];
+            }
+
+            // MySQL 8.0+ stores a `DESC` key part in descending order ('D'); earlier servers ignore `DESC`.
+            if (strtoupper((string) ($row['COLLATION'] ?? 'A')) === 'D') {
+                $grouped[$name]['descending'][] = (string) $row['COLUMN_NAME'];
+            }
         }
 
         $indexes = [];
 
         foreach ($grouped as $name => $index) {
-            $indexes[] = new Index((string) $name, $index['columns'], $index['unique'], $index['type'], $index['visible']);
+            $indexes[] = new Index((string) $name, $index['columns'], $index['unique'], $index['type'], $index['visible'], $index['prefixLengths'], $index['descending']);
         }
 
         return $indexes;
