@@ -9,6 +9,9 @@ namespace Foodics\DbHound\Analysis;
  */
 final readonly class Selectivity
 {
+    /** Rows per distinct value up to which an equality finds only a handful of rows. */
+    public const HANDFUL_OF_ROWS = 10;
+
     /**
      * @param  array<string, string>  $types  column => type
      * @param  array<string, int>  $cardinality  column => estimated distinct values, for the columns the Driver keeps statistics on
@@ -36,6 +39,26 @@ final readonly class Selectivity
         $cardinality = $this->cardinality[$column] ?? null;
 
         return $cardinality !== null && $cardinality > 0 && 1 / $cardinality > $this->lowSelectivityShare;
+    }
+
+    /**
+     * Whether an equality on the column finds only a handful of rows of a
+     * table of `$rows` rows: at most `HANDFUL_OF_ROWS` per distinct value
+     * by its statistics, or, without them, a key-like column by its type
+     * (a UUID `char(36)` or `binary(16)`, or an integer `*_id` foreign key).
+     */
+    public function findsAHandful(string $column, int $rows): bool
+    {
+        $cardinality = $this->cardinality[$column] ?? 0;
+
+        if ($cardinality > 0) {
+            return $rows / $cardinality <= self::HANDFUL_OF_ROWS;
+        }
+
+        $type = strtolower(trim($this->types[$column] ?? ''));
+
+        return in_array($type, ['char(36)', 'binary(16)'], true)
+            || (str_ends_with(strtolower($column), '_id') && preg_match('/^(smallint|mediumint|int|integer|bigint)(\(\d+\))?( unsigned)?( zerofill)?$/', $type) === 1);
     }
 
     /**

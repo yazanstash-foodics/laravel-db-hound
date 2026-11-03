@@ -11,7 +11,11 @@ use Illuminate\Encryption\Encrypter;
 
 /**
  * A Driver over a single `orders` table every query full-scans (with a
- * filesort when it sorts).
+ * filesort when it sorts). Like MySQL's, its statistics cover only the
+ * columns that lead an index: when one leads with `branch_id`, they see
+ * 50 branches, a hundred orders each. Without them, the integer foreign
+ * key `branch_id` is taken to find only a handful of rows, and two
+ * Suggestions leading with it are folded into one (ticket 024).
  *
  * @param  list<Index>  $indexes  besides PRIMARY
  */
@@ -59,7 +63,9 @@ function ordersDriver(array $indexes = []): Driver
 
         public function cardinality(string $table): array
         {
-            return [];
+            $branchLeads = array_filter($this->indexes, fn (Index $index) => $index->columns[0] === 'branch_id' && ! in_array($index->type, ['FULLTEXT', 'SPATIAL'], true));
+
+            return $table === 'orders' && $branchLeads !== [] ? ['branch_id' => 50] : [];
         }
     };
 }
@@ -164,11 +170,21 @@ it('keeps candidates with the same columns in a different order apart', function
         ->and($result->suggestions[1]->fingerprints)->toBe([$statusFirst]);
 });
 
+/**
+ * An index the optimizer ignores, which only gives `branch_id` its
+ * statistics: a hundred orders per branch, more than a handful.
+ */
+function branchStatistics(): Index
+{
+    return new Index('orders_branch_id_index', ['branch_id'], false, visible: false);
+}
+
 it('does not consolidate a candidate into one that merely shares its first column', function () {
+    // Without statistics, `branch_id` would fold the two into one (see SelectivePrefixFoldTest).
     $result = consolidate([
         'select * from `orders` where `branch_id` = ? and `status` = ?' => [10, 300.0, 50.0],
         'select * from `orders` where `branch_id` = ? and `customer_id` = ?' => [10, 200.0, 50.0],
-    ]);
+    ], [branchStatistics()]);
 
     expect(array_map(fn ($suggestion) => $suggestion->columns, $result->suggestions))->toBe([
         ['branch_id', 'status'],
@@ -197,7 +213,7 @@ it('folds a candidate several others contain into the one with the most impact',
         $branch => [1, 10.0, 10.0],
         'select * from `orders` where `branch_id` = ? and `status` = ?' => [2, 20.0, 10.0],
         'select * from `orders` where `branch_id` = ? and `customer_id` = ?' => [3, 30.0, 10.0],
-    ]);
+    ], [branchStatistics()]);
 
     expect($result->suggestions)->toHaveCount(2)
         ->and($result->suggestions[0]->columns)->toBe(['branch_id', 'customer_id'])

@@ -184,6 +184,48 @@ final readonly class TableDemand
     }
 
     /**
+     * How many of the first of `$columns` (the primary key InnoDB appends
+     * to them included) an index on them must keep in that order to serve
+     * the query through its `$leading` column, given the index the query
+     * needs (`$candidate`); null when it cannot. The query must filter on
+     * that column with an equality its own index leads with, and keep the
+     * order its own index returns rows in: the sort columns come right after
+     * the columns of `$columns` the query pins with an equality, and the
+     * index must keep them all there. Otherwise only `$leading`.
+     *
+     * @param  list<string>  $columns
+     */
+    public function seekPrefix(?IndexCandidate $candidate, string $leading, array $columns): ?int
+    {
+        if ($candidate === null || ! in_array($leading, $candidate->order->blocks[0] ?? [], true)) {
+            return null;
+        }
+
+        $reference = $this->reference;
+        $equalities = array_values(array_intersect(array_column($reference->equalities, 'column'), $candidate->columns));
+
+        if (! in_array($leading, [...$equalities, ...$reference->lists], true)) {
+            return null;
+        }
+
+        $pinned = [...$equalities, ...$reference->nulls];
+        $sort = $this->drives ? array_values(array_diff($reference->sort, $pinned)) : [];
+
+        // An index that does not serve the sort has no order to keep.
+        if ($sort === [] || array_diff($sort, $candidate->columns) !== []) {
+            return 1;
+        }
+
+        $at = 0;
+
+        while (isset($columns[$at]) && in_array($columns[$at], $pinned, true)) {
+            $at++;
+        }
+
+        return array_slice($columns, $at, count($sort)) === $sort ? max(1, $at + count($sort)) : null;
+    }
+
+    /**
      * The existing index that already serves `$candidate`: its columns, the
      * primary key InnoDB appends to it included, start with the candidate's
      * (in an order they allow). Null when none does.

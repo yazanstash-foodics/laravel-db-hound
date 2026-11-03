@@ -151,8 +151,8 @@ it('leaves at most 3 of the 11 staging unparsed entries unparsed', function () {
         'full scan on `mt942_statement`, but no indexable predicate columns were found',
         'full scan on `bank_statements_summary`, but it has only low-selectivity predicates (`merchant_id`)',
     ])->and(suggestedIndexes($result))->toEqualCanonicalizing([
+        // One index serves both review-record subqueries through the key-like `pendable_id` (ticket 024).
         ['pending_review_records', ['pendable_id', 'pendable_type', 'deleted_at']],
-        ['pending_review_records', ['pendable_id', 'status', 'deleted_at']],
         ['personal_access_tokens', ['tokenable_id', 'tokenable_type', 'last_used_at']],
         ['daily_card_insights', ['merchant_id', 'day']],
         ['orders', ['merchant_id', 'status', 'deleted_at']],

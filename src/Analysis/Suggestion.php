@@ -321,6 +321,56 @@ final class Suggestion
     }
 
     /**
+     * Take over the Fingerprints, reasons and notes of a Suggestion on the
+     * same table whose queries this one's index serves through its leading
+     * column alone, which finds only a handful of rows: they check their
+     * other predicates on those rows. Its columns stay as they are, the
+     * first `$fixed` of them (those the other queries need in that order to
+     * keep their sort) and those the other queries seek on fixed in their
+     * order, so extending an existing index never moves them, and a note
+     * names the other predicates.
+     */
+    public function serveThrough(self $other, int $fixed = 1): void
+    {
+        $leading = $this->columns[0];
+
+        // The columns the other queries seek on: this index's first ones they filter or sort on.
+        $sought = 0;
+
+        while (isset($this->columns[$sought]) && in_array($this->columns[$sought], $other->columns, true)) {
+            $sought++;
+        }
+
+        $this->narrow(ColumnOrder::fixed(array_slice($this->columns, 0, max(1, $fixed, $sought))));
+
+        $checked = array_values(array_diff($other->columns, array_slice($this->columns, 0, $sought)));
+        $several = count($other->fingerprints) > 1;
+
+        $this->flag($other->reasons, sprintf(
+            'also serves %s, which would need `(%s)`: `%s` finds only a handful of rows, so %s other predicates%s are checked on the rows it finds rather than in a second index that leads with it.',
+            implode('; ', array_map(fn (string $sql) => '`` '.self::shortened($sql).' ``', $other->fingerprints)),
+            implode(', ', $other->columns),
+            $leading,
+            $several ? 'their' : 'its',
+            $checked === [] ? '' : ' ('.implode(', ', array_map(fn (string $column) => '`'.$column.'`', $checked)).')',
+        ));
+
+        foreach ($other->notes as $note) {
+            $this->flag([], $note);
+        }
+
+        foreach ($other->leftOut as $column => ['writers' => $writers, 'for' => $for]) {
+            foreach ($for as $fingerprint => $count) {
+                $this->leftOut($column, $writers, $fingerprint, $count);
+            }
+        }
+
+        foreach ($other->served as $fingerprint => [$count, $totalMs, $maxMs, $access, $plan]) {
+            $this->serve($fingerprint, $count, $totalMs, $maxMs, $access, $plan);
+        }
+    }
+
+    /**
      * Note that the index leaves out `$column`, which `$writers` write, for
      * the served `$fingerprint`, which runs `$count` times.
      *

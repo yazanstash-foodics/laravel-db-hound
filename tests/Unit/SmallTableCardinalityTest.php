@@ -100,7 +100,8 @@ it('extends the index the plan uses on a small table instead of leading with the
         stats: [$windowed => [12, 8.33, 2.92], $latest => [10, 8.12, 3.97]],
     );
 
-    // Folding the two into one index is ticket 024's: here neither leads with an equality column other than `source`.
+    // Neither leads with an equality column other than `source`. On four rows nothing says a `source` finds only a
+    // handful of rows (a varchar, not a key-like type), so the two are not folded into one (see SelectivePrefixFoldTest).
     expect($result->unparsed)->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->extends?->name], $result->suggestions))
         ->toBe([

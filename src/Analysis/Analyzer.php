@@ -195,7 +195,7 @@ final class Analyzer
         while (true) {
             [$suggestions, $members, $candidates, $dropped] = $this->suggest($demands, $without);
             $members = array_combine(array_map(spl_object_id(...), $suggestions), $members);
-            $consolidated = $this->consolidate($suggestions, $members);
+            $consolidated = $this->foldOnSelectiveLead($this->consolidate($suggestions, $members), $members, $demands, $candidates);
             $hot = [];
 
             foreach ($consolidated as $suggestion) {
@@ -459,6 +459,88 @@ final class Analyzer
         }
 
         return [...$kept, $suggestion];
+    }
+
+    /**
+     * Fold each Suggestion whose queries another one's index serves through
+     * its leading column alone into that one: an equality on that column
+     * finds only a handful of rows, so the queries check their other
+     * predicates on those rows, and a second index leading with it would
+     * cost every write for no read gain. The queries must filter on the
+     * column with an equality their own index seeks on, and keep any order
+     * their own index gives them. Suggestions are taken most impact first,
+     * ties by their columns; each folds into the first kept one whose index
+     * serves it, or, when that one leads with the same column and only its
+     * own index serves both (the other's would lose an order), that one
+     * into it.
+     *
+     * @param  list<Suggestion>  $suggestions  consolidated
+     * @param  array<int, list<int>>  $members  Suggestion object id => its demands
+     * @param  list<TableDemand>  $demands
+     * @param  array<int, ?IndexCandidate>  $candidates  demand => the index it needs
+     * @return list<Suggestion>
+     */
+    private function foldOnSelectiveLead(array $suggestions, array &$members, array $demands, array $candidates): array
+    {
+        usort($suggestions, fn (Suggestion $a, Suggestion $b) => [$b->impact(), implode(',', $a->columns)] <=> [$a->impact(), implode(',', $b->columns)]);
+
+        // How many of the first columns of `$into` it must keep in their order to serve `$folded`'s queries; null when it cannot.
+        $serves = function (Suggestion $into, Suggestion $folded) use (&$members, $demands, $candidates): ?int {
+            if ($into->connection !== $folded->connection || $into->table !== $folded->table) {
+                return null;
+            }
+
+            $leading = $into->columns[0];
+            $table = $demands[$members[spl_object_id($into)][0]];
+
+            if (! $table->selectivity->findsAHandful($leading, $table->rowCount)) {
+                return null;
+            }
+
+            $fixed = 1;
+
+            foreach ($members[spl_object_id($folded)] as $demand) {
+                $prefix = $demands[$demand]->seekPrefix($candidates[$demand], $leading, $into->primaryKey->appendedTo($into->columns));
+
+                if ($prefix === null) {
+                    return null;
+                }
+
+                $fixed = max($fixed, $prefix);
+            }
+
+            return $fixed;
+        };
+
+        $join = function (Suggestion $into, Suggestion $folded, int $fixed) use (&$members): void {
+            $into->serveThrough($folded, $fixed);
+            $members[spl_object_id($into)] = [...$members[spl_object_id($into)], ...$members[spl_object_id($folded)]];
+            unset($members[spl_object_id($folded)]);
+        };
+
+        $kept = [];
+
+        foreach ($suggestions as $suggestion) {
+            foreach ($kept as $at => $into) {
+                if (($fixed = $serves($into, $suggestion)) !== null) {
+                    $join($into, $suggestion, $fixed);
+
+                    continue 2;
+                }
+
+                // Only to keep the folded queries' order: the one with more impact leads with the same column.
+                if ($suggestion->columns[0] === $into->columns[0] && ($fixed = $serves($suggestion, $into)) !== null) {
+                    $join($suggestion, $into, $fixed);
+                    $kept[$at] = $suggestion;
+
+                    continue 2;
+                }
+            }
+
+            $kept[] = $suggestion;
+        }
+
+        return array_values($kept);
     }
 
     /**
