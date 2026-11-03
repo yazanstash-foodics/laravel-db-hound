@@ -9,6 +9,7 @@ use Foodics\DbHound\Capture\QueryAggregate;
 use Foodics\DbHound\Capture\Recorder;
 use Foodics\DbHound\Contracts\Driver;
 use Foodics\DbHound\Contracts\Store;
+use Foodics\DbHound\Drivers\MySqlDriver;
 use Foodics\DbHound\Report\ReportContext;
 use Foodics\DbHound\Tests\IntegrationTestCase;
 use Foodics\DbHound\Tests\TestCase;
@@ -254,4 +255,18 @@ function millionOrders(array $cardinality = []): array
         ],
         'cardinality' => $cardinality,
     ]];
+}
+
+/**
+ * A Laravel `latestOfMany` eager load of personal access tokens, as the
+ * staging Report captured it (7376bced).
+ */
+const LATEST_OF_MANY = 'select `personal_access_tokens`.* from `personal_access_tokens` inner join (select max(`personal_access_tokens`.`id`) as `id_aggregate`, min(`personal_access_tokens`.`last_used_at`) as `last_used_at_aggregate`, `personal_access_tokens`.`tokenable_id`, `personal_access_tokens`.`tokenable_type` from `personal_access_tokens` inner join (select max(`personal_access_tokens`.`last_used_at`) as `last_used_at_aggregate`, `personal_access_tokens`.`tokenable_id`, `personal_access_tokens`.`tokenable_type` from `personal_access_tokens` where `personal_access_tokens`.`tokenable_id` in (?) and `personal_access_tokens`.`tokenable_type` = ? group by `personal_access_tokens`.`tokenable_id`, `personal_access_tokens`.`tokenable_type`) as `latestOfMany` on `latestOfMany`.`last_used_at_aggregate` = `personal_access_tokens`.`last_used_at` and `latestOfMany`.`tokenable_type` = `personal_access_tokens`.`tokenable_type` and `latestOfMany`.`tokenable_id` = `personal_access_tokens`.`tokenable_id` group by `personal_access_tokens`.`tokenable_id`, `personal_access_tokens`.`tokenable_type`) as `latestOfMany` on `latestOfMany`.`id_aggregate` = `personal_access_tokens`.`id` and `latestOfMany`.`last_used_at_aggregate` = `personal_access_tokens`.`last_used_at` and `latestOfMany`.`tokenable_type` = `personal_access_tokens`.`tokenable_type` and `latestOfMany`.`tokenable_id` = `personal_access_tokens`.`tokenable_id`';
+
+/**
+ * A plan recorded from MySQL 8.0 for the staging shapes (tests/Fixtures/explain/staging).
+ */
+function stagingPlan(string $name): Plan
+{
+    return MySqlDriver::planFromJson((string) file_get_contents(__DIR__.'/Fixtures/explain/staging/'.$name.'.json'));
 }

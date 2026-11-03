@@ -8,6 +8,9 @@ namespace Foodics\DbHound\Analysis;
  */
 final class Suggestion
 {
+    /** The characters of an UPDATE's SQL a note quotes. */
+    public const SQL_IN_NOTE = 200;
+
     /**
      * The served Fingerprints, highest impact first.
      *
@@ -52,6 +55,15 @@ final class Suggestion
      * How far the served Fingerprints fix the order of the columns.
      */
     private ColumnOrder $order;
+
+    /**
+     * The columns left out of the index for UPDATEs writing them: the
+     * UPDATEs, and the served Fingerprints it was left out for, with how
+     * often each ran.
+     *
+     * @var array<string, array{writers: array<string, int>, for: array<string, int>}>
+     */
+    private array $leftOut = [];
 
     /**
      * @param  list<string>  $columns  the columns the served queries need, in index order; the proposed ones leave out the trailing primary key columns InnoDB appends anyway
@@ -297,9 +309,61 @@ final class Suggestion
             $this->flag([], $note);
         }
 
+        foreach ($other->leftOut as $column => ['writers' => $writers, 'for' => $for]) {
+            foreach ($for as $fingerprint => $count) {
+                $this->leftOut($column, $writers, $fingerprint, $count);
+            }
+        }
+
         foreach ($other->served as $fingerprint => [$count, $totalMs, $maxMs, $access, $plan]) {
             $this->serve($fingerprint, $count, $totalMs, $maxMs, $access, $plan);
         }
+    }
+
+    /**
+     * Note that the index leaves out `$column`, which `$writers` write, for
+     * the served `$fingerprint`, which runs `$count` times.
+     *
+     * @param  array<string, int>  $writers  UPDATE SQL => runs
+     */
+    public function leftOut(string $column, array $writers, string $fingerprint, int $count): void
+    {
+        $this->leftOut[$column]['writers'] = ($this->leftOut[$column]['writers'] ?? []) + $writers;
+        $this->leftOut[$column]['for'][$fingerprint] = $count;
+    }
+
+    /**
+     * Say, for each column left out for UPDATEs writing it that the index
+     * does not have after all, which UPDATEs write it, how often, and how
+     * often the served queries that need it run. Done once the Suggestion
+     * is final, it having absorbed every other it serves.
+     */
+    public function noteLeftOut(): void
+    {
+        foreach ($this->leftOut as $column => ['writers' => $writers, 'for' => $for]) {
+            if (in_array($column, $this->columns, true)) {
+                continue;
+            }
+
+            uksort($writers, fn (string $a, string $b) => [$writers[$b], $a] <=> [$writers[$a], $b]);
+
+            $this->flag([], sprintf(
+                'leaves out `%s`: UPDATEs write it %s times, at least as often as the queries served that need it run (%s times), and an index on it would be maintained on each of those writes: %s.',
+                $column,
+                number_format(array_sum($writers)),
+                number_format(array_sum($for)),
+                implode('; ', array_map(fn (string $sql, int $runs) => '`` '.self::shortened($sql).' `` ('.number_format($runs).' times)', array_keys($writers), $writers)),
+            ));
+        }
+    }
+
+    /**
+     * The SQL cut to its first `SQL_IN_NOTE` characters, so a bulk UPDATE
+     * does not fill the Report.
+     */
+    private static function shortened(string $sql): string
+    {
+        return mb_strlen($sql) > self::SQL_IN_NOTE ? mb_substr($sql, 0, self::SQL_IN_NOTE).'…' : $sql;
     }
 
     private function narrow(ColumnOrder $prefix): void

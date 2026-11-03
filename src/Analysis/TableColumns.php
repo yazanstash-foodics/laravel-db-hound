@@ -102,4 +102,30 @@ final class TableColumns
     {
         $this->notNulls[] = $column;
     }
+
+    /**
+     * This reference as if the query did not filter or sort on `$columns`:
+     * an index without one of the sort columns cannot serve the sort, so
+     * the sort goes with it.
+     *
+     * @param  list<string>  $columns
+     */
+    public function without(array $columns): self
+    {
+        $without = clone $this;
+        $keep = fn (array $list) => array_values(array_diff($list, $columns));
+
+        $without->equalities = array_values(array_filter($this->equalities, fn (array $equality) => ! in_array($equality['column'], $columns, true)));
+        $without->lists = $keep($this->lists);
+        $without->ranges = $keep($this->ranges);
+        $without->nulls = $keep($this->nulls);
+        $without->notNulls = $keep($this->notNulls);
+
+        if (array_intersect($this->sort, $columns) !== []) {
+            $without->sort = [];
+            $without->sortClause = null;
+        }
+
+        return $without;
+    }
 }

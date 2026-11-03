@@ -14,8 +14,6 @@ use Foodics\DbHound\Drivers\MySqlDriver;
  * as the staging tables are.
  */
 
-const LATEST_OF_MANY = 'select `personal_access_tokens`.* from `personal_access_tokens` inner join (select max(`personal_access_tokens`.`id`) as `id_aggregate`, min(`personal_access_tokens`.`last_used_at`) as `last_used_at_aggregate`, `personal_access_tokens`.`tokenable_id`, `personal_access_tokens`.`tokenable_type` from `personal_access_tokens` inner join (select max(`personal_access_tokens`.`last_used_at`) as `last_used_at_aggregate`, `personal_access_tokens`.`tokenable_id`, `personal_access_tokens`.`tokenable_type` from `personal_access_tokens` where `personal_access_tokens`.`tokenable_id` in (?) and `personal_access_tokens`.`tokenable_type` = ? group by `personal_access_tokens`.`tokenable_id`, `personal_access_tokens`.`tokenable_type`) as `latestOfMany` on `latestOfMany`.`last_used_at_aggregate` = `personal_access_tokens`.`last_used_at` and `latestOfMany`.`tokenable_type` = `personal_access_tokens`.`tokenable_type` and `latestOfMany`.`tokenable_id` = `personal_access_tokens`.`tokenable_id` group by `personal_access_tokens`.`tokenable_id`, `personal_access_tokens`.`tokenable_type`) as `latestOfMany` on `latestOfMany`.`id_aggregate` = `personal_access_tokens`.`id` and `latestOfMany`.`last_used_at_aggregate` = `personal_access_tokens`.`last_used_at` and `latestOfMany`.`tokenable_type` = `personal_access_tokens`.`tokenable_type` and `latestOfMany`.`tokenable_id` = `personal_access_tokens`.`tokenable_id`';
-
 const WINDOW_ORDERS = 'select * from (select *, row_number() over (partition by `orders`.`merchant_id` order by `created_at` desc) as `laravel_row` from `orders` where `status` in (?) and `orders`.`merchant_id` in (?) and (`orders`.`merchant_id` = ? and `orders`.`merchant_id` is not null) and `orders`.`deleted_at` is null) as `laravel_table` where `laravel_row` <= ? order by `laravel_row`';
 
 const WINDOW_MERCHANT_USERS = 'select * from (select *, row_number() over (partition by `merchant_users`.`merchant_id` order by `created_at` asc) as `laravel_row` from `merchant_users` where `is_contact_user` = ? and `merchant_users`.`merchant_id` in (?)) as `laravel_table` where `laravel_row` <= ? order by `laravel_row`';
@@ -29,11 +27,6 @@ const DERIVED_DIFF = 'select sum(diff.difference) as negative, `account_number`,
 const DERIVED_TEMP_TABLE = 'select count(*) as `aggregate` from (select `card_id`, sum(amount) as amount, count(distinct day) as unique_visits, count(distinct branch_id) as branches_count from `daily_card_insights` where `merchant_id` = ? and `day` between ? and ? group by `card_id` having (amount / ?) >= ? and (unique_visits / ?) >= ? and (branches_count / ?) >= ?) as `temp_table`';
 
 const NOT_EQUAL = 'select count(*) as `aggregate` from `mt942_statement` where not `statement_date` = ?';
-
-function stagingPlan(string $name): Plan
-{
-    return MySqlDriver::planFromJson((string) file_get_contents(__DIR__.'/../Fixtures/explain/staging/'.$name.'.json'));
-}
 
 /**
  * The tables the staging plans were recorded on, indexed as they were.

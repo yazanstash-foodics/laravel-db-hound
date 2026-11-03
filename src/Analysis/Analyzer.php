@@ -53,8 +53,8 @@ final class Analyzer
      */
     public function analyze(array $queries, Driver|Closure $drivers): AnalysisResult
     {
-        /** @var array<string, Suggestion> $suggestions */
-        $suggestions = [];
+        /** @var list<TableDemand> $demands */
+        $demands = [];
         $unparsed = [];
         $resolved = [];
 
@@ -74,11 +74,15 @@ final class Analyzer
 
         $selected = $this->qualification->top($qualifying);
 
+        // Schema metadata is looked up once per table for the whole run.
+        $driverFor = function (string $connection) use (&$resolved, $drivers): Driver {
+            return $resolved[$connection] ??= new RunScopedDriver($drivers instanceof Driver ? $drivers : $drivers($connection));
+        };
+
         foreach ($selected as $query) {
             $outcomes[spl_object_id($query)] = FingerprintOutcome::Other;
 
-            // Schema metadata is looked up once per table for the whole run.
-            $driver = $resolved[$query->connection] ??= new RunScopedDriver($drivers instanceof Driver ? $drivers : $drivers($query->connection));
+            $driver = $driverFor($query->connection);
 
             // Writes are explained as the SELECT of the rows they touch.
             $shape = ExplainableQuery::from($query->sql);
@@ -115,45 +119,12 @@ final class Analyzer
 
             $outcomes[spl_object_id($query)] = FingerprintOutcome::Explained;
 
-            // Every table is inspected before the Fingerprint serves any Suggestion,
+            // Every table is inspected before the Fingerprint demands any index,
             // so a failed lookup leaves no Suggestion half-served.
-            $served = [];
             $small = false;
 
             try {
-                $candidates = $this->candidates($query->sql, $shape->sql, $plan, $driver, $unparsed, $query->connection, $small);
-
-                // Every symptom of its plan is on a table too small to index.
-                if ($small) {
-                    $outcomes[spl_object_id($query)] = FingerprintOutcome::RowThreshold;
-                }
-
-                foreach ($candidates as [$access, $reference, $reasons, $candidate, $selectivity]) {
-                    $table = $reference->table;
-                    $indexes = $driver->indexes($table);
-                    $primaryKey = PrimaryKey::of($indexes, $driver->engine($table));
-
-                    if ($this->alreadyIndexed($indexes, $candidate->order, $primaryKey)) {
-                        continue;
-                    }
-
-                    $key = $query->connection.'|'.$table.'|'.implode(',', $candidate->columns);
-
-                    $served[] = [$key, $access, $reasons, $candidate, $suggestions[$key] ?? new Suggestion(
-                        connection: $query->connection,
-                        table: $table,
-                        columns: $candidate->columns,
-                        reasons: [],
-                        rowCount: $driver->rowCount($table),
-                        existingIndexes: $indexes,
-                        columnTypes: array_intersect_key($driver->columnTypes($table), array_flip($primaryKey->strip($candidate->order)->columns())),
-                        access: $access,
-                        plan: $plan,
-                        order: $candidate->order,
-                        primaryKey: $primaryKey,
-                        selectivity: $selectivity,
-                    )];
-                }
+                $demanded = $this->candidates($query, $shape->sql, $plan, $driver, $unparsed, $small);
             } catch (Throwable $e) {
                 $outcomes[spl_object_id($query)] = FingerprintOutcome::Other;
                 $unparsed[] = new UnparsedQuery($query->connection, $query->sql, self::failure('inspecting its tables', $e));
@@ -161,15 +132,15 @@ final class Analyzer
                 continue;
             }
 
-            foreach ($served as [$key, $access, $reasons, $candidate, $suggestion]) {
-                $suggestions[$key] ??= $suggestion;
-                $suggestions[$key]->constrain($candidate->order);
-                $suggestions[$key]->flag($reasons, $candidate->note);
-                $suggestions[$key]->serve($query->sql, $query->count, $query->totalMs, $query->maxMs, $access, $plan);
+            // Every symptom of its plan is on a table too small to index.
+            if ($small) {
+                $outcomes[spl_object_id($query)] = FingerprintOutcome::RowThreshold;
             }
+
+            array_push($demands, ...$demanded);
         }
 
-        $ranked = $this->consolidate(array_values($suggestions));
+        $ranked = $this->suggestions($demands, $queries, $driverFor, $unparsed);
         usort($ranked, fn (Suggestion $a, Suggestion $b) => $b->impact() <=> $a->impact());
 
         // An existing index can be replaced once: by the Suggestion with the most impact.
@@ -185,6 +156,182 @@ final class Analyzer
         }
 
         return new AnalysisResult($ranked, self::distinct($unparsed), FingerprintAccounting::tally(array_values($outcomes)));
+    }
+
+    /**
+     * The consolidated Suggestions the demands make, none indexing a column
+     * UPDATEs write at least as often as the queries it would serve with
+     * that column run: each write would also maintain the index. Those are
+     * the Fingerprints of one consolidated Suggestion that need the column
+     * (an UPDATE it serves aside, its write being the price of its own
+     * lookup). Their demands are built again without it, as if their
+     * queries did not filter or sort on it, and consolidated again, until
+     * no such column is left. A demand with nothing worth indexing left,
+     * or whose rest an existing index already serves, makes no Suggestion:
+     * its Fingerprint goes to `$unparsed` with the reason.
+     *
+     * @param  list<TableDemand>  $demands
+     * @param  list<QueryAggregate>  $queries  every captured Fingerprint
+     * @param  Closure(string): Driver  $driverFor  a connection's Driver
+     * @param  list<UnparsedQuery>  $unparsed
+     * @return list<Suggestion>
+     */
+    private function suggestions(array $demands, array $queries, Closure $driverFor, array &$unparsed): array
+    {
+        if ($demands === []) {
+            return [];
+        }
+
+        // Every captured UPDATE counts, explained or not, but only on the tables an index is demanded on.
+        $writes = self::columnWrites($demands, $queries, $driverFor);
+
+        /** @var array<int, array<string, array<string, int>>> $without  demand => column it is built without => UPDATE SQL writing it => runs */
+        $without = [];
+
+        while (true) {
+            [$suggestions, $members, $candidates, $dropped] = $this->suggest($demands, $without);
+            $members = array_combine(array_map(spl_object_id(...), $suggestions), $members);
+            $consolidated = $this->consolidate($suggestions, $members);
+            $hot = [];
+
+            foreach ($consolidated as $suggestion) {
+                foreach ($suggestion->columns as $column) {
+                    // The demands that need the column, and how often their Fingerprints run.
+                    $readers = [];
+                    $runs = [];
+
+                    foreach ($members[spl_object_id($suggestion)] as $demand) {
+                        if (in_array($column, $candidates[$demand]->columns ?? [], true)) {
+                            $readers[] = $demand;
+                            $runs[$demands[$demand]->query->sql] = $demands[$demand]->query->count;
+                        }
+                    }
+
+                    $writers = array_diff_key($writes->writers($suggestion->connection, $suggestion->table, $column), array_flip($suggestion->fingerprints));
+
+                    if ($writers !== [] && array_sum($writers) >= array_sum($runs)) {
+                        foreach ($readers as $demand) {
+                            $hot[$demand][$column] = $writers;
+                        }
+                    }
+                }
+            }
+
+            if ($hot === []) {
+                break;
+            }
+
+            foreach ($hot as $demand => $columns) {
+                $without[$demand] = ($without[$demand] ?? []) + $columns;
+            }
+        }
+
+        foreach ($dropped as $demand => $reason) {
+            $unparsed[] = new UnparsedQuery($demands[$demand]->query->connection, $demands[$demand]->query->sql, $reason);
+        }
+
+        foreach ($consolidated as $suggestion) {
+            $suggestion->noteLeftOut();
+        }
+
+        return $consolidated;
+    }
+
+    /**
+     * The Suggestions the demands make, each built without the columns of
+     * `$without`, one per connection, table and columns; with, for each,
+     * its demands, the index each demand needs, and why each demand that
+     * makes none goes to the "unparsed" section.
+     *
+     * @param  list<TableDemand>  $demands
+     * @param  array<int, array<string, array<string, int>>>  $without
+     * @return array{list<Suggestion>, list<list<int>>, array<int, ?IndexCandidate>, array<int, string>}
+     */
+    private function suggest(array $demands, array $without): array
+    {
+        $suggestions = [];
+        $members = [];
+        $candidates = [];
+        $dropped = [];
+
+        foreach ($demands as $at => $demand) {
+            $leftOut = $without[$at] ?? [];
+            $candidate = $candidates[$at] = $demand->candidate(array_keys($leftOut));
+            $servedBy = $candidate === null || $candidate->onlyWeak ? null : $demand->servedBy($candidate);
+
+            if ($candidate === null || $candidate->onlyWeak || $servedBy !== null) {
+                $dropped[$at] = sprintf(
+                    '%s on `%s`, but it has only columns written by frequent UPDATEs (%s)',
+                    implode(', ', $demand->reasons),
+                    $demand->table(),
+                    self::columnList(array_keys($leftOut)),
+                ).match (true) {
+                    $servedBy !== null => " and columns the existing index `{$servedBy->name}` already serves",
+                    $candidate !== null => ' and low-selectivity predicates ('.self::columnList($candidate->columns).')',
+                    default => '',
+                };
+
+                continue;
+            }
+
+            $key = $demand->query->connection.'|'.$demand->table().'|'.implode(',', $candidate->columns);
+            $suggestions[$key] ??= new Suggestion(
+                connection: $demand->query->connection,
+                table: $demand->table(),
+                columns: $candidate->columns,
+                reasons: [],
+                rowCount: $demand->rowCount,
+                existingIndexes: $demand->indexes,
+                columnTypes: array_intersect_key($demand->columnTypes, array_flip($demand->primaryKey->strip($candidate->order)->columns())),
+                access: $demand->access,
+                plan: $demand->plan,
+                order: $candidate->order,
+                primaryKey: $demand->primaryKey,
+                selectivity: $demand->selectivity,
+            );
+            $members[$key][] = $at;
+
+            $suggestion = $suggestions[$key];
+            $suggestion->constrain($candidate->order);
+            $suggestion->flag($demand->reasons, $candidate->note);
+            $suggestion->serve($demand->query->sql, $demand->query->count, $demand->query->totalMs, $demand->query->maxMs, $demand->access, $demand->plan);
+
+            foreach ($leftOut as $column => $writers) {
+                $suggestion->leftOut($column, $writers, $demand->query->sql, $demand->query->count);
+            }
+        }
+
+        return [array_values($suggestions), array_values($members), $candidates, $dropped];
+    }
+
+    /**
+     * The columns the captured UPDATEs write on the tables the demands are on.
+     *
+     * @param  non-empty-list<TableDemand>  $demands
+     * @param  list<QueryAggregate>  $queries
+     * @param  Closure(string): Driver  $driverFor
+     */
+    private static function columnWrites(array $demands, array $queries, Closure $driverFor): ColumnWrites
+    {
+        $tables = [];
+
+        foreach ($demands as $demand) {
+            $tables[$demand->query->connection][$demand->table()] = true;
+        }
+
+        return ColumnWrites::of(
+            $queries,
+            array_map(array_keys(...), $tables),
+            fn (string $connection, string $table) => array_keys($driverFor($connection)->columnTypes($table)),
+        );
+    }
+
+    /**
+     * @param  list<string>  $columns
+     */
+    private static function columnList(array $columns): string
+    {
+        return implode(', ', array_map(fn (string $column) => '`'.$column.'`', $columns));
     }
 
     /**
@@ -212,17 +359,23 @@ final class Analyzer
      * index instead of several overlapping ones. A Suggestion several others
      * serve goes to the one with the most impact.
      *
+     * `$members` holds what each Suggestion stands for (by object id): a
+     * Suggestion folded into another one adds its members to that one's.
+     *
+     * @template T
+     *
      * @param  list<Suggestion>  $suggestions
+     * @param  array<int, list<T>>  $members
      * @return list<Suggestion>
      */
-    private function consolidate(array $suggestions): array
+    private function consolidate(array $suggestions, array &$members = []): array
     {
         usort($suggestions, fn (Suggestion $a, Suggestion $b) => [$b->impact(), count($b->columns)] <=> [$a->impact(), count($a->columns)]);
 
         $kept = [];
 
         foreach ($suggestions as $suggestion) {
-            $kept = $this->fold($kept, $suggestion);
+            $kept = $this->fold($kept, $suggestion, $members);
         }
 
         return $kept;
@@ -236,25 +389,35 @@ final class Analyzer
      * other: first those of the one served, then those of the one serving.
      * Else keep `$suggestion` apart.
      *
+     * @template T
+     *
      * @param  list<Suggestion>  $kept
+     * @param  array<int, list<T>>  $members
      * @return list<Suggestion>
      */
-    private function fold(array $kept, Suggestion $suggestion): array
+    private function fold(array $kept, Suggestion $suggestion, array &$members): array
     {
+        $join = function (Suggestion $into, Suggestion $folded) use (&$members): void {
+            $members[spl_object_id($into)] = [...$members[spl_object_id($into)] ?? [], ...$members[spl_object_id($folded)] ?? []];
+            unset($members[spl_object_id($folded)]);
+        };
+
         foreach (Leeway::cases() as $leeway) {
             foreach ($kept as $at => $into) {
                 if ($into->contains($suggestion, $leeway)) {
                     $into->absorb($suggestion, $leeway);
+                    $join($into, $suggestion);
 
                     return $kept;
                 }
 
                 if ($suggestion->contains($into, $leeway)) {
                     $suggestion->absorb($into, $leeway);
+                    $join($suggestion, $into);
                     unset($kept[$at]);
 
                     // Grown, it may now fold into another one.
-                    return $this->fold(array_values($kept), $suggestion);
+                    return $this->fold(array_values($kept), $suggestion, $members);
                 }
             }
         }
@@ -263,18 +426,21 @@ final class Analyzer
     }
 
     /**
-     * The table accesses of a plan that show a missing-index symptom, each
-     * with the table reference it reads, the symptoms, and the index it
-     * needs, and how selective an equality on each of the table's columns is.
-     * Symptomatic accesses db-hound cannot turn into a candidate are added
-     * to `$unparsed`; `$small` is set when every symptomatic access was left
-     * out because its table is under the row threshold.
+     * The demands of the table accesses of a plan that show a missing-index
+     * symptom and need an index no existing one serves: each with the table
+     * reference it reads, the symptoms, and how selective an equality on
+     * each of the table's columns is. Symptomatic accesses db-hound cannot
+     * turn into a candidate are added to `$unparsed`; `$small` is set when
+     * every symptomatic access was left out because its table is under the
+     * row threshold.
      *
      * @param  list<UnparsedQuery>  $unparsed
-     * @return list<array{TableAccess, TableColumns, list<string>, IndexCandidate, Selectivity}>
+     * @return list<TableDemand>
      */
-    private function candidates(string $fingerprint, string $sql, Plan $plan, Driver $driver, array &$unparsed, string $connection, bool &$small = false): array
+    private function candidates(QueryAggregate $query, string $sql, Plan $plan, Driver $driver, array &$unparsed, bool &$small = false): array
     {
+        $fingerprint = $query->sql;
+        $connection = $query->connection;
         $symptoms = [];
 
         foreach ($plan->accesses as $position => $access) {
@@ -397,7 +563,23 @@ final class Analyzer
                 $driver->rowCount($reference->table) < $this->minRowsForCardinality ? [] : $driver->cardinality($reference->table),
                 $this->lowSelectivityShare,
             );
-            $candidate = IndexCandidate::for($reference, $before, $position === $driving, $selectivity, PrimaryKey::of($driver->indexes($reference->table), $driver->engine($reference->table)));
+            $table = $reference->table;
+            $indexes = $driver->indexes($table);
+            $demand = new TableDemand(
+                query: $query,
+                access: $access,
+                plan: $plan,
+                reasons: $reasons,
+                reference: $reference,
+                readBefore: $before,
+                drives: $position === $driving,
+                selectivity: $selectivity,
+                primaryKey: PrimaryKey::of($indexes, $driver->engine($table)),
+                indexes: $indexes,
+                rowCount: $driver->rowCount($table),
+                columnTypes: $driver->columnTypes($table),
+            );
+            $candidate = $demand->candidate();
 
             if ($candidate === null) {
                 if ($reference->hasUnindexablePredicates || $extracted->hasUnresolvedColumns) {
@@ -422,7 +604,9 @@ final class Analyzer
                 continue;
             }
 
-            $candidates[] = [$access, $reference, $reasons, $candidate, $selectivity];
+            if ($demand->servedBy($candidate) === null) {
+                $candidates[] = $demand;
+            }
         }
 
         $small = $skippedSmall && ! $looked;
@@ -516,19 +700,5 @@ final class Analyzer
         $code = $e instanceof PDOException ? ($e->errorInfo[0] ?? $e->getCode()) : $e->getCode();
 
         return $step.' failed ('.class_basename($e).($code === 0 || $code === '' ? '' : ', SQLSTATE '.$code).')';
-    }
-
-    /**
-     * @param  list<Index>  $indexes
-     */
-    private function alreadyIndexed(array $indexes, ColumnOrder $columns, PrimaryKey $primaryKey): bool
-    {
-        foreach ($indexes as $index) {
-            if ($index->coversAsLeftPrefix($columns, $primaryKey)) {
-                return true;
-            }
-        }
-
-        return false;
     }
 }
