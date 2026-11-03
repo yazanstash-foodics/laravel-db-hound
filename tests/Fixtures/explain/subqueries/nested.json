@@ -1,0 +1,88 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "302.50"
+    },
+    "table": {
+      "table_name": "posts",
+      "access_type": "ALL",
+      "rows_examined_per_scan": 3000,
+      "rows_produced_per_join": 3000,
+      "filtered": "100.00",
+      "cost_info": {
+        "read_cost": "2.50",
+        "eval_cost": "300.00",
+        "prefix_cost": "302.50",
+        "data_read_per_join": "1M"
+      },
+      "used_columns": [
+        "id",
+        "title",
+        "author_id"
+      ],
+      "attached_condition": "(exists(/* select#2 */ select 1 from `db_hound_fixtures`.`comments` where ((`db_hound_fixtures`.`posts`.`id` = `db_hound_fixtures`.`comments`.`post_id`) and (exists(/* select#3 */ select 1 from `db_hound_fixtures`.`votes` where ((`db_hound_fixtures`.`votes`.`kind` = 'up') and (`db_hound_fixtures`.`comments`.`id` = `db_hound_fixtures`.`votes`.`comment_id`))) or (`db_hound_fixtures`.`comments`.`status` = 'a')))) or (`db_hound_fixtures`.`posts`.`title` = 'p1'))",
+      "attached_subqueries": [
+        {
+          "dependent": true,
+          "cacheable": false,
+          "query_block": {
+            "select_id": 2,
+            "cost_info": {
+              "query_cost": "503.50"
+            },
+            "table": {
+              "table_name": "comments",
+              "access_type": "ALL",
+              "rows_examined_per_scan": 5000,
+              "rows_produced_per_join": 500,
+              "filtered": "10.00",
+              "cost_info": {
+                "read_cost": "3.50",
+                "eval_cost": "50.00",
+                "prefix_cost": "503.50",
+                "data_read_per_join": "50K"
+              },
+              "used_columns": [
+                "id",
+                "post_id",
+                "status"
+              ],
+              "attached_condition": "((`db_hound_fixtures`.`posts`.`id` = `db_hound_fixtures`.`comments`.`post_id`) and (exists(/* select#3 */ select 1 from `db_hound_fixtures`.`votes` where ((`db_hound_fixtures`.`votes`.`kind` = 'up') and (`db_hound_fixtures`.`comments`.`id` = `db_hound_fixtures`.`votes`.`comment_id`))) or (`db_hound_fixtures`.`comments`.`status` = 'a')))",
+              "attached_subqueries": [
+                {
+                  "dependent": true,
+                  "cacheable": false,
+                  "query_block": {
+                    "select_id": 3,
+                    "cost_info": {
+                      "query_cost": "503.75"
+                    },
+                    "table": {
+                      "table_name": "votes",
+                      "access_type": "ALL",
+                      "rows_examined_per_scan": 5000,
+                      "rows_produced_per_join": 50,
+                      "filtered": "1.00",
+                      "cost_info": {
+                        "read_cost": "453.75",
+                        "eval_cost": "5.00",
+                        "prefix_cost": "503.75",
+                        "data_read_per_join": "5K"
+                      },
+                      "used_columns": [
+                        "comment_id",
+                        "kind"
+                      ],
+                      "attached_condition": "((`db_hound_fixtures`.`votes`.`kind` = 'up') and (`db_hound_fixtures`.`comments`.`id` = `db_hound_fixtures`.`votes`.`comment_id`))"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

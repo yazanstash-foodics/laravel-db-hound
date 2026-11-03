@@ -22,6 +22,7 @@ The first release. db-hound captures production queries and suggests missing MyS
   - composite indexes ordered equality → range → sort, with a note when a filesort or temporary table remains;
   - a `partial index use` reason when a `ref` or `range` access seeks on only part of its index while other predicates of the table (`IN`, `IS NULL`, a range past a key gap) are checked row by row, extending that index when it starts the new one;
   - consolidation across Fingerprints (left-prefix containment), dedupe against existing indexes, and extend-existing-index proposals;
+  - the tables of every subquery the plan reads: derived tables, `SELECT`-list subqueries (`withCount`), `WHERE` subqueries (`attached_subqueries`, e.g. a `whereHas` inside an `OR`), `HAVING` subqueries (`having_subqueries`) and those MySQL evaluates once (`optimized_away_subqueries`); a query a Suggestion serves is not also listed for another table having only low-selectivity predicates;
   - never indexing a column captured UPDATEs write at least as often as the served queries that need it run, with a note naming it and those UPDATEs;
   - a header accounting for every analyzed Fingerprint by outcome (explained, or why not), and a warning naming any qualification threshold looser than its default;
   - a one-screen summary table of every Suggestion, then one section per table (ordered by summed impact) giving its row count, existing indexes and column types once, followed by its Suggestions with their `EXPLAIN` summary, impact and served Fingerprints;

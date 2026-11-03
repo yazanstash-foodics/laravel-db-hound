@@ -1,6 +1,5 @@
 <?php
 
-use Foodics\DbHound\Analysis\AnalysisResult;
 use Foodics\DbHound\Analysis\Index;
 use Foodics\DbHound\Analysis\Plan;
 use Foodics\DbHound\Analysis\TableAccess;
@@ -88,22 +87,6 @@ function stagingShapes(array $indexes = []): array
     }
 
     return $shapes;
-}
-
-/**
- * @return list<array{string, list<string>}>
- */
-function suggestedIndexes(AnalysisResult $result): array
-{
-    return array_map(fn ($suggestion) => [$suggestion->table, $suggestion->columns], $result->suggestions);
-}
-
-/**
- * @return list<string>
- */
-function unparsedReasons(AnalysisResult $result): array
-{
-    return array_map(fn ($unparsed) => $unparsed->reason, $result->unparsed);
 }
 
 it('analyzes the tables inside the derived tables of a latestOfMany query, never the derived tables themselves', function () {
@@ -248,7 +231,8 @@ it('tells a whereHas subquery from a withCount one on the same table', function 
 
     $result = analyzeWithCardinality([$sql => $plan], $shapes);
 
-    // The withCount scan runs per post on `post_id`; the whereHas one, materialized once, filters on `status` alone.
+    // The withCount scan runs per post on `post_id`; the whereHas one, materialized once, filters on `status` alone,
+    // which is not listed: the Fingerprint gets an index.
     expect(suggestedIndexes($result))->toBe([['comments', ['post_id']]])
-        ->and(unparsedReasons($result))->toBe(['full scan on `comments`, but it has only low-selectivity predicates (`status`)']);
+        ->and(unparsedReasons($result))->toBe([]);
 });

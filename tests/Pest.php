@@ -270,3 +270,19 @@ function stagingPlan(string $name): Plan
 {
     return MySqlDriver::planFromJson((string) file_get_contents(__DIR__.'/Fixtures/explain/staging/'.$name.'.json'));
 }
+
+/**
+ * @return list<array{string, list<string>}>
+ */
+function suggestedIndexes(AnalysisResult $result): array
+{
+    return array_map(fn ($suggestion) => [$suggestion->table, $suggestion->columns], $result->suggestions);
+}
+
+/**
+ * @return list<string>
+ */
+function unparsedReasons(AnalysisResult $result): array
+{
+    return array_map(fn ($unparsed) => $unparsed->reason, $result->unparsed);
+}

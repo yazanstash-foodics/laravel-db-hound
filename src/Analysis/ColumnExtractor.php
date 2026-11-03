@@ -16,9 +16,10 @@ use PhpMyAdmin\SqlParser\TokenType;
  * Finds, per table reference of a SELECT, the columns it is filtered (WHERE),
  * joined (JOIN ON / USING) and sorted (ORDER BY / GROUP BY) on, classified as
  * equality, range or sort. Aliases resolve to their base table; subqueries in
- * FROM (derived tables), the SELECT list, `EXISTS (...)`, `IN (...)` and
- * comparisons are followed, with correlated columns attributed to the outer
- * table they name, and a column joined to a derived table's to that table.
+ * FROM (derived tables), the SELECT list, `EXISTS (...)`, `IN (...)`,
+ * comparisons and HAVING are followed, with correlated columns attributed to
+ * the outer table they name, and a column joined to a derived table's to
+ * that table.
  *
  * phpmyadmin/sql-parser provides the statement structure; predicates are read
  * from its tokens, splitting only top-level ANDs (anything under an OR is not
@@ -166,6 +167,12 @@ final class ColumnExtractor
         }
 
         $this->conditions($select->where, $chain);
+
+        // HAVING filters groups, not rows: only its subqueries (EXPLAIN's `having_subqueries`) filter their own tables.
+        if ($select->having !== null && $select->having !== []) {
+            [$tokens, $raw] = $this->tokens(implode(' ', array_map(fn (Condition $condition) => $condition->expr, $select->having)));
+            $this->withSubqueries($tokens, $raw, $chain);
+        }
 
         // A correlated subquery in the SELECT list (withCount, withSum), alone or within an expression (CASE, COALESCE), filters its own tables.
         foreach ($select->expr as $item) {

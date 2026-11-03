@@ -16,6 +16,14 @@ use Throwable;
 final class MySqlDriver implements Driver
 {
     /**
+     * The deepest JSON nesting of an EXPLAIN plan db-hound reads. MySQL
+     * nests at most about 64 query blocks, but one block can take 10 JSON
+     * levels or more (a derived table holding a UNION under a GROUP BY is
+     * 10), so a real plan can be over 600 levels deep: 64 levels per block.
+     */
+    private const PLAN_DEPTH = 4096;
+
+    /**
      * The session's `explain_json_format_version` (MySQL 8.3+), '' on servers
      * without it, null until first looked up.
      */
@@ -219,11 +227,15 @@ final class MySqlDriver implements Driver
     /**
      * Summarize `EXPLAIN FORMAT=JSON` output (JSON format version 1). Table
      * accesses are listed in the order the plan reads them.
+     *
+     * The walk recurses once per JSON level, so the decoding depth bounds
+     * it: a plan nested deeper than `PLAN_DEPTH` fails to decode, far past
+     * what MySQL's nesting limit lets a query reach.
      */
     public static function planFromJson(string $explain): Plan
     {
         /** @var array<string, mixed> $json */
-        $json = json_decode($explain, true, flags: JSON_THROW_ON_ERROR);
+        $json = json_decode($explain, true, self::PLAN_DEPTH, JSON_THROW_ON_ERROR);
 
         $accesses = [];
         $filesort = false;

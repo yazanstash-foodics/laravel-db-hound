@@ -58,6 +58,8 @@ final class Analyzer
         /** @var list<TableDemand> $demands */
         $demands = [];
         $unparsed = [];
+        /** @var list<UnparsedQuery> $weakOnly entries of $unparsed for a table with only low-selectivity predicates */
+        $weakOnly = [];
         $resolved = [];
 
         /** @var array<int, FingerprintOutcome> $outcomes  object id => outcome */
@@ -126,7 +128,7 @@ final class Analyzer
             $small = false;
 
             try {
-                $demanded = $this->candidates($query, $shape->sql, $plan, $driver, $unparsed, $small);
+                $demanded = $this->candidates($query, $shape->sql, $plan, $driver, $unparsed, $small, $weakOnly);
             } catch (Throwable $e) {
                 $outcomes[spl_object_id($query)] = FingerprintOutcome::Other;
                 $unparsed[] = new UnparsedQuery($query->connection, $query->sql, self::failure('inspecting its tables', $e));
@@ -157,7 +159,7 @@ final class Analyzer
             }
         }
 
-        return new AnalysisResult($ranked, self::distinct($unparsed), FingerprintAccounting::tally(array_values($outcomes)));
+        return new AnalysisResult($ranked, self::distinct(self::withoutServed($unparsed, $weakOnly, $ranked)), FingerprintAccounting::tally(array_values($outcomes)));
     }
 
     /**
@@ -337,6 +339,38 @@ final class Analyzer
     }
 
     /**
+     * `$unparsed` without the `$skippable` entries of a Fingerprint a
+     * Suggestion serves: a table of the query (the one around a whereHas,
+     * say) having only low-selectivity predicates does not leave it
+     * unserved when another of its tables gets an index.
+     *
+     * @param  list<UnparsedQuery>  $unparsed
+     * @param  list<UnparsedQuery>  $skippable
+     * @param  list<Suggestion>  $suggestions
+     * @return list<UnparsedQuery>
+     */
+    private static function withoutServed(array $unparsed, array $skippable, array $suggestions): array
+    {
+        $served = [];
+
+        foreach ($suggestions as $suggestion) {
+            foreach ($suggestion->fingerprints as $fingerprint) {
+                $served[$suggestion->connection."\0".$fingerprint] = true;
+            }
+        }
+
+        $skip = [];
+
+        foreach ($skippable as $query) {
+            if (isset($served[$query->connection."\0".$query->sql])) {
+                $skip[spl_object_id($query)] = true;
+            }
+        }
+
+        return array_values(array_filter($unparsed, fn (UnparsedQuery $query) => ! isset($skip[spl_object_id($query)])));
+    }
+
+    /**
      * Each Fingerprint once per reason: a plan can show the same symptom on
      * several accesses (a self-join, a table read in several subqueries).
      *
@@ -436,12 +470,15 @@ final class Analyzer
      * each of the table's columns is. Symptomatic accesses db-hound cannot
      * turn into a candidate are added to `$unparsed`; `$small` is set when
      * every symptomatic access was left out because its table is under the
-     * row threshold.
+     * row threshold. An access whose table has only low-selectivity
+     * predicates is also added to `$weakOnly`: it is listed only when no
+     * Suggestion serves the Fingerprint.
      *
      * @param  list<UnparsedQuery>  $unparsed
+     * @param  list<UnparsedQuery>  $weakOnly
      * @return list<TableDemand>
      */
-    private function candidates(QueryAggregate $query, string $sql, Plan $plan, Driver $driver, array &$unparsed, bool &$small = false): array
+    private function candidates(QueryAggregate $query, string $sql, Plan $plan, Driver $driver, array &$unparsed, bool &$small, array &$weakOnly): array
     {
         $fingerprint = $query->sql;
         $connection = $query->connection;
@@ -603,7 +640,7 @@ final class Analyzer
             }
 
             if ($candidate->onlyWeak) {
-                $unparsed[] = new UnparsedQuery($connection, $fingerprint, sprintf(
+                $unparsed[] = $weakOnly[] = new UnparsedQuery($connection, $fingerprint, sprintf(
                     '%s on `%s`, but it has only low-selectivity predicates (%s)',
                     implode(', ', $reasons),
                     $reference->table,
@@ -740,8 +777,8 @@ final class Analyzer
      */
     public static function failure(string $step, Throwable $e): string
     {
-        // QueryException is a PDOException carrying the driver's errorInfo.
-        $code = $e instanceof PDOException ? ($e->errorInfo[0] ?? $e->getCode()) : $e->getCode();
+        // QueryException is a PDOException carrying the driver's errorInfo; other codes (a JsonException's, say) are no SQLSTATE.
+        $code = $e instanceof PDOException ? ($e->errorInfo[0] ?? $e->getCode()) : '';
 
         return $step.' failed ('.class_basename($e).($code === 0 || $code === '' ? '' : ', SQLSTATE '.$code).')';
     }
