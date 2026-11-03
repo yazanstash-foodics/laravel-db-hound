@@ -104,6 +104,18 @@ final class TableColumns
     }
 
     /**
+     * This reference with `$column` first among its ranges: the one range
+     * an index on it seeks on.
+     */
+    public function rangeFirst(string $column): self
+    {
+        $first = clone $this;
+        $first->ranges = [$column, ...array_values(array_diff($this->ranges, [$column]))];
+
+        return $first;
+    }
+
+    /**
      * This reference as if the query did not filter or sort on `$columns`:
      * an index without one of the sort columns cannot serve the sort, so
      * the sort goes with it.

@@ -12,6 +12,8 @@ final readonly class TableAccess
      * @param  list<string>  $within  the tables (derived tables by their alias, `<subqueryN>` for others) whose materialization reads it, outermost first
      * @param  bool  $derived  whether it is a derived table the plan materializes: a temporary table it reads in full by design
      * @param  bool  $selectList  whether a subquery in the SELECT list reads it
+     * @param  ?list<string>  $usedKeyParts  the columns of `$key` the access seeks on, in index order; null when the plan does not say
+     * @param  bool  $checksRows  whether the plan checks a condition on the rows (or index entries) the access reads, past what it seeks on
      */
     public function __construct(
         public string $table,
@@ -22,10 +24,25 @@ final readonly class TableAccess
         public array $within = [],
         public bool $derived = false,
         public bool $selectList = false,
+        public ?array $usedKeyParts = null,
+        public bool $checksRows = false,
     ) {}
 
     public function isFullScan(): bool
     {
         return strtoupper($this->accessType) === 'ALL';
+    }
+
+    /**
+     * Whether the access seeks on some parts of an index (`ref`, `range`)
+     * and checks a condition on the rows it reads: a predicate the index
+     * could have sought on may be among those it checks row by row.
+     */
+    public function checksRowsPastKey(): bool
+    {
+        return $this->key !== null
+            && $this->usedKeyParts !== null
+            && $this->checksRows
+            && in_array(strtolower($this->accessType), ['ref', 'range'], true);
     }
 }

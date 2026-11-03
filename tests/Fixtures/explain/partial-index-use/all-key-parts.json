@@ -1,0 +1,41 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "0.35"
+        },
+        "table": {
+            "table_name": "settlements",
+            "access_type": "ref",
+            "possible_keys": [
+                "settlements_merchant_id_status_index",
+                "settlements_merchant_id_created_at_index"
+            ],
+            "key": "settlements_merchant_id_status_index",
+            "used_key_parts": [
+                "merchant_id",
+                "status"
+            ],
+            "key_length": "90",
+            "ref": [
+                "const",
+                "const"
+            ],
+            "rows_examined_per_scan": 1,
+            "rows_produced_per_join": 1,
+            "filtered": "100.00",
+            "cost_info": {
+                "read_cost": "0.25",
+                "eval_cost": "0.10",
+                "prefix_cost": "0.35",
+                "data_read_per_join": "104"
+            },
+            "used_columns": [
+                "id",
+                "merchant_id",
+                "status",
+                "created_at"
+            ]
+        }
+    }
+}

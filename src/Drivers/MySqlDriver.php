@@ -429,6 +429,11 @@ final class MySqlDriver implements Driver
                 // A semijoin materializes `<subqueryN>`, a derived table its alias (or `<derivedN>`).
                 derived: isset($node['materialized_from_subquery']) && ! str_starts_with($table, '<subquery'),
                 selectList: $selectList,
+                usedKeyParts: isset($node['used_key_parts']) && is_array($node['used_key_parts'])
+                    ? array_values(array_map(strval(...), $node['used_key_parts']))
+                    : null,
+                // Only whether there is one: the condition's text holds the literal values.
+                checksRows: isset($node['attached_condition']) || isset($node['index_condition']),
             );
         }
 

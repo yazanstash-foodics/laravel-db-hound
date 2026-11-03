@@ -1,0 +1,83 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "150.66"
+        },
+        "grouping_operation": {
+            "using_temporary_table": true,
+            "using_filesort": true,
+            "cost_info": {
+                "sort_cost": "37.03"
+            },
+            "nested_loop": [
+                {
+                    "table": {
+                        "table_name": "daily_card_insights",
+                        "access_type": "ref",
+                        "possible_keys": [
+                            "PRIMARY"
+                        ],
+                        "key": "PRIMARY",
+                        "used_key_parts": [
+                            "merchant_id"
+                        ],
+                        "key_length": "8",
+                        "ref": [
+                            "const"
+                        ],
+                        "rows_examined_per_scan": 1000,
+                        "rows_produced_per_join": 37,
+                        "filtered": "3.70",
+                        "cost_info": {
+                            "read_cost": "0.68",
+                            "eval_cost": "3.70",
+                            "prefix_cost": "100.68",
+                            "data_read_per_join": "1K"
+                        },
+                        "used_columns": [
+                            "merchant_id",
+                            "card_id",
+                            "day",
+                            "transactions_count"
+                        ],
+                        "attached_condition": "((`db_hound_shapes`.`daily_card_insights`.`transactions_count` > 2) and (`db_hound_shapes`.`daily_card_insights`.`day` between '2025-12-30' and '2026-01-01'))"
+                    }
+                },
+                {
+                    "table": {
+                        "table_name": "customer_segments",
+                        "access_type": "eq_ref",
+                        "possible_keys": [
+                            "PRIMARY"
+                        ],
+                        "key": "PRIMARY",
+                        "used_key_parts": [
+                            "merchant_id",
+                            "card_id"
+                        ],
+                        "key_length": "16",
+                        "ref": [
+                            "const",
+                            "db_hound_shapes.daily_card_insights.card_id"
+                        ],
+                        "rows_examined_per_scan": 1,
+                        "rows_produced_per_join": 37,
+                        "filtered": "100.00",
+                        "cost_info": {
+                            "read_cost": "9.26",
+                            "eval_cost": "3.70",
+                            "prefix_cost": "113.64",
+                            "data_read_per_join": "1K"
+                        },
+                        "used_columns": [
+                            "merchant_id",
+                            "card_id",
+                            "segment_id"
+                        ]
+                    }
+                }
+            ]
+        }
+    }
+}

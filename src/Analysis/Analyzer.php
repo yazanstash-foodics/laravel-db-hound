@@ -25,6 +25,8 @@ final class Analyzer
 
     public const REASON_TEMPORARY = 'temporary table';
 
+    public const REASON_PARTIAL_INDEX_USE = 'partial index use';
+
     public const REASON_NEEDS_SAMPLE = 'cannot EXPLAIN without a Sample: the Fingerprint has a literal MySQL does not accept as a parameter';
 
     /** Share of the rows one value of an equality column matches on average above which the column is a weak filter. */
@@ -427,8 +429,10 @@ final class Analyzer
 
     /**
      * The demands of the table accesses of a plan that show a missing-index
-     * symptom and need an index no existing one serves: each with the table
-     * reference it reads, the symptoms, and how selective an equality on
+     * symptom (among them an index used only in part while the plan checks
+     * other predicates of the table row by row) and need an index no
+     * existing one serves: each with the table reference it reads, the
+     * symptoms, and how selective an equality on
      * each of the table's columns is. Symptomatic accesses db-hound cannot
      * turn into a candidate are added to `$unparsed`; `$small` is set when
      * every symptomatic access was left out because its table is under the
@@ -449,7 +453,11 @@ final class Analyzer
             }
         }
 
-        if (array_filter($symptoms) === [] && ! $plan->usingFilesort && ! $plan->usingTemporary) {
+        $symptomatic = array_filter($symptoms) !== [] || $plan->usingFilesort || $plan->usingTemporary;
+        // Only the SQL tells whether a predicate the plan checks on the rows of a partly used index is one an index could seek on.
+        $pastKey = array_filter(array_intersect_key($plan->accesses, $symptoms), fn (TableAccess $access) => $access->checksRowsPastKey());
+
+        if (! $symptomatic && $pastKey === []) {
             return [];
         }
 
@@ -463,11 +471,18 @@ final class Analyzer
 
         try {
             $extracted = $this->extractor->extract($sql, $columns);
-        } catch (UnparseableSql $e) {
-            $unparsed[] = new UnparsedQuery($connection, $fingerprint, $e->getMessage());
-
-            return [];
         } catch (Throwable $e) {
+            // A plan with no other symptom only may show a partial index use: one db-hound cannot read is no Fingerprint that needs attention.
+            if (! $symptomatic) {
+                return [];
+            }
+
+            if ($e instanceof UnparseableSql) {
+                $unparsed[] = new UnparsedQuery($connection, $fingerprint, $e->getMessage());
+
+                return [];
+            }
+
             // A failed schema lookup is the database's, not the parser's: the caller reports it.
             if ($e instanceof TableLookupFailed) {
                 throw $e->failure;
@@ -533,6 +548,21 @@ final class Analyzer
                 ]));
             }
 
+            $pastKey = [];
+
+            // Only a table of the default database is inspected (see below).
+            if ($reference->database === null && $access->checksRowsPastKey()) {
+                try {
+                    $pastKey = $this->demand($query, $access, $plan, $reasons, $reference, $before, $position === $driving, $driver)->predicatesPastKey();
+                } catch (Throwable) {
+                    // A table that cannot be inspected shows no partial index use: the lookup failing must not drop what the other tables need.
+                }
+            }
+
+            if ($pastKey !== []) {
+                $reasons[] = self::REASON_PARTIAL_INDEX_USE;
+            }
+
             if ($reasons === []) {
                 continue;
             }
@@ -557,28 +587,7 @@ final class Analyzer
                 continue;
             }
 
-            // On a small table index statistics are noise: the column types alone tell which equalities are weak.
-            $selectivity = new Selectivity(
-                $driver->columnTypes($reference->table),
-                $driver->rowCount($reference->table) < $this->minRowsForCardinality ? [] : $driver->cardinality($reference->table),
-                $this->lowSelectivityShare,
-            );
-            $table = $reference->table;
-            $indexes = $driver->indexes($table);
-            $demand = new TableDemand(
-                query: $query,
-                access: $access,
-                plan: $plan,
-                reasons: $reasons,
-                reference: $reference,
-                readBefore: $before,
-                drives: $position === $driving,
-                selectivity: $selectivity,
-                primaryKey: PrimaryKey::of($indexes, $driver->engine($table)),
-                indexes: $indexes,
-                rowCount: $driver->rowCount($table),
-                columnTypes: $driver->columnTypes($table),
-            );
+            $demand = $this->demand($query, $access, $plan, $reasons, $reference, $before, $position === $driving, $driver, $pastKey);
             $candidate = $demand->candidate();
 
             if ($candidate === null) {
@@ -612,6 +621,41 @@ final class Analyzer
         $small = $skippedSmall && ! $looked;
 
         return $candidates;
+    }
+
+    /**
+     * The demand of a table reference of the connection's default database,
+     * for `$reasons`, whose index must have the `$required` columns.
+     *
+     * @param  list<string>  $reasons
+     * @param  list<string>  $before  names of the references the plan reads before this one
+     * @param  list<string>  $required
+     */
+    private function demand(QueryAggregate $query, TableAccess $access, Plan $plan, array $reasons, TableColumns $reference, array $before, bool $drives, Driver $driver, array $required = []): TableDemand
+    {
+        $table = $reference->table;
+        $indexes = $driver->indexes($table);
+
+        return new TableDemand(
+            query: $query,
+            access: $access,
+            plan: $plan,
+            reasons: $reasons,
+            reference: $reference,
+            readBefore: $before,
+            drives: $drives,
+            // On a small table index statistics are noise: the column types alone tell which equalities are weak.
+            selectivity: new Selectivity(
+                $driver->columnTypes($table),
+                $driver->rowCount($table) < $this->minRowsForCardinality ? [] : $driver->cardinality($table),
+                $this->lowSelectivityShare,
+            ),
+            primaryKey: PrimaryKey::of($indexes, $driver->engine($table)),
+            indexes: $indexes,
+            rowCount: $driver->rowCount($table),
+            columnTypes: $driver->columnTypes($table),
+            required: $required,
+        );
     }
 
     /**

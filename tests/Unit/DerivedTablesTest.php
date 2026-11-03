@@ -130,14 +130,22 @@ it('analyzes the inner query of a window-function eager load (laravel_table)', f
     ],
 ]);
 
-it('suggests an index on the table of a correlated subquery in the SELECT list (withCount, withSum)', function (string $sql, string $plan, array $columns) {
+it('suggests an index on the table of a correlated subquery in the SELECT list (withCount, withSum)', function (string $sql, string $plan, array $expected) {
     $result = analyzeWithCardinality([$sql => stagingPlan($plan)], stagingShapes());
 
+    $suggested = suggestedIndexes($result);
+    // In table order: the columns of each, in index order.
+    usort($suggested, fn (array $a, array $b) => $a[0] <=> $b[0]);
+
     expect($result->unparsed)->toBe([])
-        ->and(suggestedIndexes($result))->toBe([['pending_review_records', $columns]]);
+        ->and($suggested)->toBe($expected);
 })->with([
-    'withCount on a morph relation' => [SELECT_LIST_COUNTS, 'select-list-counts', ['pendable_id', 'pendable_type', 'deleted_at']],
-    'withCount among selected columns' => [SELECT_LIST_TRANSACTIONS, 'select-list-transactions', ['pendable_id', 'status', 'deleted_at']],
+    'withCount on a morph relation' => [SELECT_LIST_COUNTS, 'select-list-counts', [['pending_review_records', ['pendable_id', 'pendable_type', 'deleted_at']]]],
+    // The withSum reads `transaction_charges` through its `transaction_id` index and checks `type` on the rows.
+    'withCount among selected columns' => [SELECT_LIST_TRANSACTIONS, 'select-list-transactions', [
+        ['pending_review_records', ['pendable_id', 'status', 'deleted_at']],
+        ['transaction_charges', ['transaction_id', 'type']],
+    ]],
 ]);
 
 it('leaves at most 3 of the 11 staging unparsed entries unparsed', function () {
@@ -165,6 +173,9 @@ it('leaves at most 3 of the 11 staging unparsed entries unparsed', function () {
         ['personal_access_tokens', ['tokenable_id', 'tokenable_type', 'last_used_at']],
         ['daily_card_insights', ['merchant_id', 'day']],
         ['orders', ['merchant_id', 'status', 'deleted_at']],
+        // Partial index use: the plans seek on the first column only and check the second on the rows.
+        ['merchant_users', ['merchant_id', 'is_contact_user']],
+        ['transaction_charges', ['transaction_id', 'type']],
     ]);
 });
 

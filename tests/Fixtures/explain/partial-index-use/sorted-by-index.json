@@ -1,0 +1,43 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "17.50"
+        },
+        "ordering_operation": {
+            "using_filesort": false,
+            "table": {
+                "table_name": "refunds",
+                "access_type": "ref",
+                "possible_keys": [
+                    "refunds_merchant_id_created_at_index"
+                ],
+                "key": "refunds_merchant_id_created_at_index",
+                "used_key_parts": [
+                    "merchant_id"
+                ],
+                "key_length": "8",
+                "ref": [
+                    "const"
+                ],
+                "rows_examined_per_scan": 50,
+                "rows_produced_per_join": 10,
+                "filtered": "20.00",
+                "backward_index_scan": true,
+                "cost_info": {
+                    "read_cost": "12.50",
+                    "eval_cost": "1.00",
+                    "prefix_cost": "17.50",
+                    "data_read_per_join": "1K"
+                },
+                "used_columns": [
+                    "id",
+                    "merchant_id",
+                    "status",
+                    "created_at"
+                ],
+                "attached_condition": "(`db_hound_shapes`.`refunds`.`status` in ('paid','failed'))"
+            }
+        }
+    }
+}

@@ -1,0 +1,37 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "7.91"
+        },
+        "table": {
+            "table_name": "settlements",
+            "access_type": "range",
+            "possible_keys": [
+                "settlements_merchant_id_created_at_index"
+            ],
+            "key": "settlements_merchant_id_created_at_index",
+            "used_key_parts": [
+                "merchant_id",
+                "created_at"
+            ],
+            "key_length": "13",
+            "rows_examined_per_scan": 17,
+            "rows_produced_per_join": 17,
+            "filtered": "100.00",
+            "index_condition": "((`db_hound_shapes`.`settlements`.`merchant_id` = 5) and (`db_hound_shapes`.`settlements`.`created_at` > TIMESTAMP'2026-01-10 00:00:00'))",
+            "cost_info": {
+                "read_cost": "6.21",
+                "eval_cost": "1.70",
+                "prefix_cost": "7.91",
+                "data_read_per_join": "1K"
+            },
+            "used_columns": [
+                "id",
+                "merchant_id",
+                "status",
+                "created_at"
+            ]
+        }
+    }
+}
