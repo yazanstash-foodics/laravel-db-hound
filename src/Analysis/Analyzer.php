@@ -30,6 +30,9 @@ final class Analyzer
     /** Share of the rows one value of an equality column matches on average above which the column is a weak filter. */
     public const LOW_SELECTIVITY_SHARE = 0.1;
 
+    /** Table rows under which index statistics are ignored: so few rows say nothing about how many distinct values a column has. */
+    public const MIN_ROWS_FOR_CARDINALITY = 1000;
+
     public function __construct(
         private readonly Encrypter $encrypter,
         private readonly ColumnExtractor $extractor = new ColumnExtractor,
@@ -37,6 +40,7 @@ final class Analyzer
         private readonly int $examinedRowsThreshold = 1000,
         public readonly Qualification $qualification = new Qualification,
         private readonly float $lowSelectivityShare = self::LOW_SELECTIVITY_SHARE,
+        private readonly int $minRowsForCardinality = self::MIN_ROWS_FOR_CARDINALITY,
     ) {}
 
     /**
@@ -387,9 +391,10 @@ final class Analyzer
                 continue;
             }
 
+            // On a small table index statistics are noise: the column types alone tell which equalities are weak.
             $selectivity = new Selectivity(
                 $driver->columnTypes($reference->table),
-                $driver->cardinality($reference->table),
+                $driver->rowCount($reference->table) < $this->minRowsForCardinality ? [] : $driver->cardinality($reference->table),
                 $this->lowSelectivityShare,
             );
             $candidate = IndexCandidate::for($reference, $before, $position === $driving, $selectivity, PrimaryKey::of($driver->indexes($reference->table), $driver->engine($reference->table)));

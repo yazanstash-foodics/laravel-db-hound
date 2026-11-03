@@ -231,6 +231,13 @@ return [
     | an index). Weak filters never lead an index. A query with only weak
     | filters gets no Suggestion: it is listed as unparsed instead.
     |
+    | On a table with fewer than `min_rows_for_cardinality` rows, index
+    | statistics are ignored, since so few rows say nothing about a column's
+    | distinct values: only booleans, enums, `IS NULL` and `IS NOT NULL` are
+    | weak there, and the other equality columns go alphabetically unless an
+    | existing index or another query needs another order. It matters only
+    | when `min_table_rows` is lowered below it.
+    |
     */
 
     'analysis' => [
@@ -244,6 +251,7 @@ return [
         'max_fingerprints' => (int) env('DB_HOUND_ANALYSIS_MAX_FINGERPRINTS', 200),
         'min_table_rows' => (int) env('DB_HOUND_ANALYSIS_MIN_TABLE_ROWS', 1000),
         'low_selectivity_share' => (float) env('DB_HOUND_ANALYSIS_LOW_SELECTIVITY_SHARE', 0.1),
+        'min_rows_for_cardinality' => (int) env('DB_HOUND_ANALYSIS_MIN_ROWS_FOR_CARDINALITY', 1000),
 
         'ignore' => [
             'tables' => [
