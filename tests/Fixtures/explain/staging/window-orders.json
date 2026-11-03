@@ -1,0 +1,86 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "4.28"
+        },
+        "ordering_operation": {
+            "using_filesort": true,
+            "cost_info": {
+                "sort_cost": "1.33"
+            },
+            "table": {
+                "table_name": "laravel_table",
+                "access_type": "ALL",
+                "rows_examined_per_scan": 4,
+                "rows_produced_per_join": 1,
+                "filtered": "33.33",
+                "cost_info": {
+                    "read_cost": "2.82",
+                    "eval_cost": "0.13",
+                    "prefix_cost": "2.95",
+                    "data_read_per_join": "159"
+                },
+                "used_columns": [
+                    "id",
+                    "merchant_id",
+                    "status",
+                    "created_at",
+                    "deleted_at",
+                    "laravel_row"
+                ],
+                "attached_condition": "(`laravel_table`.`laravel_row` <= 1)",
+                "materialized_from_subquery": {
+                    "using_temporary_table": true,
+                    "dependent": false,
+                    "cacheable": true,
+                    "query_block": {
+                        "select_id": 2,
+                        "cost_info": {
+                            "query_cost": "509.25"
+                        },
+                        "windowing": {
+                            "windows": [
+                                {
+                                    "name": "<unnamed window>",
+                                    "using_filesort": true,
+                                    "filesort_key": [
+                                        "`merchant_id`",
+                                        "`created_at` desc"
+                                    ],
+                                    "functions": [
+                                        "row_number"
+                                    ]
+                                }
+                            ],
+                            "cost_info": {
+                                "sort_cost": "5.00"
+                            },
+                            "table": {
+                                "table_name": "orders",
+                                "access_type": "ALL",
+                                "rows_examined_per_scan": 5000,
+                                "rows_produced_per_join": 4,
+                                "filtered": "0.10",
+                                "cost_info": {
+                                    "read_cost": "503.75",
+                                    "eval_cost": "0.50",
+                                    "prefix_cost": "504.25",
+                                    "data_read_per_join": "559"
+                                },
+                                "used_columns": [
+                                    "id",
+                                    "merchant_id",
+                                    "status",
+                                    "created_at",
+                                    "deleted_at"
+                                ],
+                                "attached_condition": "((`db_hound_shapes`.`orders`.`merchant_id` = 7) and (`db_hound_shapes`.`orders`.`status` = 'paid') and (`db_hound_shapes`.`orders`.`deleted_at` is null))"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

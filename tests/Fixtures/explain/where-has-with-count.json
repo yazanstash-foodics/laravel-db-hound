@@ -1,0 +1,98 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "779.50"
+    },
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "<subquery3>",
+          "access_type": "ALL",
+          "materialized_from_subquery": {
+            "using_temporary_table": true,
+            "query_block": {
+              "table": {
+                "table_name": "comments",
+                "access_type": "ALL",
+                "rows_examined_per_scan": 5000,
+                "rows_produced_per_join": 500,
+                "filtered": "10.00",
+                "cost_info": {
+                  "read_cost": "453.50",
+                  "eval_cost": "50.00",
+                  "prefix_cost": "503.50",
+                  "data_read_per_join": "50K"
+                },
+                "used_columns": [
+                  "post_id",
+                  "status"
+                ],
+                "attached_condition": "(`db_hound`.`comments`.`status` = 'a')"
+              }
+            }
+          }
+        }
+      },
+      {
+        "table": {
+          "table_name": "posts",
+          "access_type": "eq_ref",
+          "possible_keys": [
+            "PRIMARY"
+          ],
+          "key": "PRIMARY",
+          "used_key_parts": [
+            "id"
+          ],
+          "key_length": "8",
+          "ref": [
+            "<subquery3>.post_id"
+          ],
+          "rows_examined_per_scan": 1,
+          "rows_produced_per_join": 1,
+          "filtered": "100.00",
+          "cost_info": {
+            "read_cost": "0.25",
+            "eval_cost": "0.10",
+            "prefix_cost": "779.50",
+            "data_read_per_join": "416"
+          },
+          "used_columns": [
+            "id",
+            "title"
+          ]
+        }
+      }
+    ],
+    "select_list_subqueries": [
+      {
+        "dependent": true,
+        "cacheable": false,
+        "query_block": {
+          "select_id": 2,
+          "cost_info": {
+            "query_cost": "503.50"
+          },
+          "table": {
+            "table_name": "comments",
+            "access_type": "ALL",
+            "rows_examined_per_scan": 5000,
+            "rows_produced_per_join": 500,
+            "filtered": "10.00",
+            "cost_info": {
+              "read_cost": "3.50",
+              "eval_cost": "50.00",
+              "prefix_cost": "503.50",
+              "data_read_per_join": "50K"
+            },
+            "used_columns": [
+              "post_id"
+            ],
+            "attached_condition": "(`db_hound`.`posts`.`id` = `db_hound`.`comments`.`post_id`)"
+          }
+        }
+      }
+    ]
+  }
+}

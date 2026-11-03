@@ -20,6 +20,11 @@ final readonly class Index
         public bool $visible = true,
     ) {}
 
+    public function isPrimary(): bool
+    {
+        return $this->name === 'PRIMARY';
+    }
+
     /**
      * Whether the optimizer can use this index for equality, range and sort
      * lookups by left prefix: a visible B-tree. A FULLTEXT or SPATIAL index
@@ -32,25 +37,22 @@ final readonly class Index
 
     /**
      * Whether this index already serves `$columns`: it can serve lookups and
-     * `$columns` is a left prefix of its columns.
-     *
-     * @param  list<string>  $columns
+     * `$columns`, in an order they allow, is a left prefix of the columns it
+     * holds, the primary key InnoDB appends to it included.
      */
-    public function coversAsLeftPrefix(array $columns): bool
+    public function coversAsLeftPrefix(ColumnOrder $columns, PrimaryKey $primaryKey = new PrimaryKey): bool
     {
         return $this->servesLookups()
-            && array_slice($this->columns, 0, count($columns)) === $columns;
+            && ColumnOrder::fixed($primaryKey->appendedTo($this->columns))->startingWith($columns) !== null;
     }
 
     /**
-     * Whether this index's columns start `$columns` and leave some out,
-     * so an index on `$columns` could replace it.
-     *
-     * @param  list<string>  $columns
+     * Whether this index's columns start `$columns` (in an order they
+     * allow) and leave some out, so an index on `$columns` could replace it.
      */
-    public function isStrictLeftPrefixOf(array $columns): bool
+    public function isStrictLeftPrefixOf(ColumnOrder $columns): bool
     {
-        return count($this->columns) < count($columns)
-            && array_slice($columns, 0, count($this->columns)) === $this->columns;
+        return count($this->columns) < count($columns->columns())
+            && $columns->startingWith(ColumnOrder::fixed($this->columns)) !== null;
     }
 }

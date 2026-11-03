@@ -3,6 +3,7 @@
 namespace Foodics\DbHound\Commands;
 
 use Foodics\DbHound\Analysis\Analyzer;
+use Foodics\DbHound\Analysis\Qualification;
 use Foodics\DbHound\Capture\QueryAggregate;
 use Foodics\DbHound\Drivers\AnalysisDrivers;
 use Foodics\DbHound\Persistence\QueryRepository;
@@ -42,7 +43,7 @@ class AnalyzeCommand extends Command
         $result = $analyzer->analyze($queries, $drivers->driverFor(...));
 
         $now = Carbon::now();
-        $report = $renderer->render($this->reportContext($now, $queries, $analyzer->qualification->describe(), $drivers), $result);
+        $report = $renderer->render($this->reportContext($now, $queries, $analyzer->qualification, $drivers), $result);
 
         $disk = $filesystems->disk((string) config('db-hound.report.disk', 'local'));
         $directory = trim((string) config('db-hound.report.directory', 'db-hound'), '/');
@@ -58,9 +59,8 @@ class AnalyzeCommand extends Command
 
     /**
      * @param  list<QueryAggregate>  $queries
-     * @param  array<string, string>  $thresholds
      */
-    private function reportContext(Carbon $now, array $queries, array $thresholds, AnalysisDrivers $drivers): ReportContext
+    private function reportContext(Carbon $now, array $queries, Qualification $qualification, AnalysisDrivers $drivers): ReportContext
     {
         $first = $queries === [] ? null : min(array_map(fn (QueryAggregate $q) => $q->firstSeen, $queries));
         $last = $queries === [] ? null : max(array_map(fn (QueryAggregate $q) => $q->lastSeen, $queries));
@@ -77,7 +77,8 @@ class AnalyzeCommand extends Command
             lastSeen: $last === null ? null : Carbon::createFromTimestamp($last, date_default_timezone_get()),
             fingerprints: count($queries),
             queries: array_sum(array_map(fn (QueryAggregate $q) => $q->count, $queries)),
-            thresholds: $thresholds,
+            thresholds: $qualification->describe(),
+            relaxed: $qualification->relaxed(),
         );
     }
 }

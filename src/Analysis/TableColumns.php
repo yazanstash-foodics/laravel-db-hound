@@ -9,7 +9,7 @@ namespace Foodics\DbHound\Analysis;
 final class TableColumns
 {
     /**
-     * Equality predicates (`=`, `<=>`, `IN (?)`, `IS NULL`). `joinedTo`
+     * Equality predicates (`=`, `<=>`, `IN (?)`). `joinedTo`
      * names the other table reference of a `column = column` predicate; the
      * column only narrows this table once that reference has been read.
      *
@@ -26,11 +26,27 @@ final class TableColumns
     public array $lists = [];
 
     /**
-     * Range predicates (`<`, `>`, `BETWEEN`, `LIKE`, `IS NOT NULL`).
+     * Range predicates (`<`, `>`, `BETWEEN`, `LIKE`).
      *
      * @var list<string>
      */
     public array $ranges = [];
+
+    /**
+     * `IS NULL` predicates: an equality to seek on, but a weak filter, since
+     * on a soft-delete column (`deleted_at IS NULL`) it matches nearly every row.
+     *
+     * @var list<string>
+     */
+    public array $nulls = [];
+
+    /**
+     * `IS NOT NULL` predicates: a range to seek on, and a weak filter, since
+     * it usually matches nearly every row.
+     *
+     * @var list<string>
+     */
+    public array $notNulls = [];
 
     /**
      * The GROUP BY (or, without one, ORDER BY) columns, when every one of
@@ -51,11 +67,15 @@ final class TableColumns
      * @param  string  $name  how EXPLAIN names the reference: its alias, else its table
      * @param  string  $table  the base table
      * @param  ?string  $database  the database the query names for the table, if any
+     * @param  list<string>  $within  the aliases of the derived tables (FROM subqueries) whose query reads it, outermost first
+     * @param  bool  $selectList  whether a subquery in the SELECT list reads it
      */
     public function __construct(
         public readonly string $name,
         public readonly string $table,
         public readonly ?string $database = null,
+        public readonly array $within = [],
+        public readonly bool $selectList = false,
     ) {}
 
     public function addEquality(string $column, ?string $joinedTo = null): void
@@ -71,5 +91,15 @@ final class TableColumns
     public function addRange(string $column): void
     {
         $this->ranges[] = $column;
+    }
+
+    public function addNull(string $column): void
+    {
+        $this->nulls[] = $column;
+    }
+
+    public function addNotNull(string $column): void
+    {
+        $this->notNulls[] = $column;
     }
 }

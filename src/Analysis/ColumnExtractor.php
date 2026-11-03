@@ -16,8 +16,9 @@ use PhpMyAdmin\SqlParser\TokenType;
  * Finds, per table reference of a SELECT, the columns it is filtered (WHERE),
  * joined (JOIN ON / USING) and sorted (ORDER BY / GROUP BY) on, classified as
  * equality, range or sort. Aliases resolve to their base table; subqueries in
- * FROM, `EXISTS (...)`, `IN (...)` and comparisons are followed, with
- * correlated columns attributed to the outer table they name.
+ * FROM (derived tables), the SELECT list, `EXISTS (...)`, `IN (...)` and
+ * comparisons are followed, with correlated columns attributed to the outer
+ * table they name, and a column joined to a derived table's to that table.
  *
  * phpmyadmin/sql-parser provides the statement structure; predicates are read
  * from its tokens, splitting only top-level ANDs (anything under an OR is not
@@ -41,6 +42,15 @@ final class ColumnExtractor
 
     private bool $unresolved = false;
 
+    /** @var list<string> the aliases of the derived tables (FROM subqueries) */
+    private array $derived = [];
+
+    /** @var list<string> the aliases of the derived tables whose query is being read, outermost first */
+    private array $within = [];
+
+    /** whether a subquery in the SELECT list is being read */
+    private bool $selectList = false;
+
     /** @var callable(string): list<string> */
     private $columnsOf;
 
@@ -57,22 +67,25 @@ final class ColumnExtractor
     {
         $this->references = [];
         $this->unresolved = false;
+        $this->derived = [];
+        $this->within = [];
+        $this->selectList = false;
         $this->columnsOf = $columnsOf;
         $this->columns = [];
 
         $statement = $this->parse($sql);
 
-        $this->select($statement, []);
+        $this->select($statement, [], []);
 
         foreach ($statement->union as $union) {
             $part = $this->unionPart($union);
 
             if ($part !== null) {
-                $this->select($part, []);
+                $this->select($part, [], []);
             }
         }
 
-        return new ExtractedColumns($this->references, $this->unresolved);
+        return new ExtractedColumns($this->references, $this->unresolved, $this->derived);
     }
 
     /**
@@ -105,8 +118,24 @@ final class ColumnExtractor
 
     /**
      * @param  list<array<string, ?TableColumns>>  $outer  enclosing scopes, innermost first
+     * @param  list<string>  $within  the aliases of the derived tables whose query this is, outermost first
      */
-    private function select(SelectStatement $select, array $outer): void
+    private function select(SelectStatement $select, array $outer, array $within): void
+    {
+        $enclosing = $this->within;
+        $this->within = $within;
+
+        try {
+            $this->readSelect($select, $outer);
+        } finally {
+            $this->within = $enclosing;
+        }
+    }
+
+    /**
+     * @param  list<array<string, ?TableColumns>>  $outer  enclosing scopes, innermost first
+     */
+    private function readSelect(SelectStatement $select, array $outer): void
     {
         /** @var array<string, ?TableColumns> $scope */
         $scope = [];
@@ -138,6 +167,23 @@ final class ColumnExtractor
 
         $this->conditions($select->where, $chain);
 
+        // A correlated subquery in the SELECT list (withCount, withSum), alone or within an expression (CASE, COALESCE), filters its own tables.
+        foreach ($select->expr as $item) {
+            $sql = $item instanceof Expression ? (string) $item->expr : (string) $item;
+
+            if (stripos($sql, 'select') !== false) {
+                [$tokens, $raw] = $this->tokens($sql);
+                $enclosing = $this->selectList;
+                $this->selectList = true;
+
+                try {
+                    $this->withSubqueries($tokens, $raw, $chain);
+                } finally {
+                    $this->selectList = $enclosing;
+                }
+            }
+        }
+
         foreach ($using as [$joined, $previous, $column]) {
             $other = $this->resolve(null, $column, [$previous]);
 
@@ -156,8 +202,10 @@ final class ColumnExtractor
     private function addReference(array &$scope, Expression $expression, array $outer): ?TableColumns
     {
         if ($expression->subquery !== null) {
-            $this->select($this->parse($this->unwrap((string) $expression->expr)), $outer);
-            $scope[(string) $expression->alias] = null;
+            $alias = (string) $expression->alias;
+            $this->select($this->parse($this->unwrap((string) $expression->expr)), $outer, [...$this->within, $alias]);
+            $scope[$alias] = null;
+            $this->derived[] = $alias;
 
             return null;
         }
@@ -172,6 +220,8 @@ final class ColumnExtractor
             $expression->alias ?? $expression->table,
             $expression->table,
             $expression->database === null || $expression->database === '' ? null : $expression->database,
+            $this->within,
+            $this->selectList,
         );
         $this->references[] = $reference;
         $scope[$reference->name] = $reference;
@@ -318,8 +368,8 @@ final class ColumnExtractor
         return match ($value) {
             'IN' => ($operand[0]['kind'] ?? null) === 'open' && $this->closing($operand, 0) === count($operand) - 1
                 && $this->constant(array_slice($operand, 1, -1)) && $this->inList($column, array_slice($operand, 1, -1), $chain),
-            'IS' => count($operand) === 1 && $operand[0]['value'] === 'NULL' && $this->equality($column, $chain)
-                || count($operand) === 1 && $operand[0]['value'] === 'NOT NULL' && $this->range($column, $chain),
+            'IS' => count($operand) === 1 && in_array($operand[0]['value'], ['NULL', 'NOT NULL'], true)
+                && $this->nullCheck($column, $operand[0]['value'] === 'NULL', $chain),
             'BETWEEN', 'LIKE' => $this->constant(array_values(array_filter($operand, fn (array $token) => ! $this->isAnd($token))))
                 && $this->range($column, $chain),
             default => false,
@@ -406,6 +456,29 @@ final class ColumnExtractor
     }
 
     /**
+     * `column IS NULL` (`$null`) or `column IS NOT NULL`.
+     *
+     * @param  array{qualifier: ?string, column: string, next: int}  $column
+     * @param  list<array<string, ?TableColumns>>  $chain
+     */
+    private function nullCheck(array $column, bool $null, array $chain): bool
+    {
+        $reference = $this->resolve($column['qualifier'], $column['column'], $chain);
+
+        if ($reference === null) {
+            return true;
+        }
+
+        if ($null) {
+            $reference->addNull($this->spelled($reference, $column['column']));
+        } else {
+            $reference->addNotNull($this->spelled($reference, $column['column']));
+        }
+
+        return true;
+    }
+
+    /**
      * @param  array{qualifier: ?string, column: string, next: int}  $left
      * @param  array{qualifier: ?string, column: string, next: int}  $right
      * @param  list<array<string, ?TableColumns>>  $chain
@@ -416,6 +489,14 @@ final class ColumnExtractor
         $rightTable = $this->resolve($right['qualifier'], $right['column'], $chain);
 
         if ($leftTable === null || $rightTable === null) {
+            // A column joined to a derived table's narrows its table once the plan has read the derived table.
+            $derived = $this->derivedTable($leftTable === null ? $left['qualifier'] : $right['qualifier'], $chain);
+            $table = $leftTable ?? $rightTable;
+
+            if ($table !== null && $derived !== null) {
+                $table->addEquality($this->spelled($table, $leftTable === null ? $right['column'] : $left['column']), $derived);
+            }
+
             return true;
         }
 
@@ -426,6 +507,22 @@ final class ColumnExtractor
         $this->join($leftTable, $left['column'], $rightTable, $right['column']);
 
         return true;
+    }
+
+    /**
+     * The derived table `$qualifier` names, searching scopes innermost first.
+     *
+     * @param  list<array<string, ?TableColumns>>  $chain
+     */
+    private function derivedTable(?string $qualifier, array $chain): ?string
+    {
+        foreach ($chain as $scope) {
+            if ($qualifier !== null && array_key_exists($qualifier, $scope)) {
+                return $scope[$qualifier] === null && in_array($qualifier, $this->derived, true) ? $qualifier : null;
+            }
+        }
+
+        return null;
     }
 
     private function join(TableColumns $left, string $leftColumn, TableColumns $right, string $rightColumn): void
@@ -477,7 +574,7 @@ final class ColumnExtractor
                 $close = $this->closing($tokens, $i);
                 $sql = implode('', array_slice($raw, $tokens[$i]['at'] + 1, $tokens[$close]['at'] - $tokens[$i]['at'] - 1));
 
-                $this->select($this->parse($sql), $chain);
+                $this->select($this->parse($sql), $chain, $this->within);
 
                 $result[] = ['kind' => 'subquery', 'value' => '', 'at' => $tokens[$i]['at']];
                 $i = $close;
@@ -560,7 +657,10 @@ final class ColumnExtractor
             $column = $this->spelled($reference, $expression->column);
             $columns[] = $column;
 
-            if ($item instanceof OrderKeyword && ! in_array(['column' => $column, 'joinedTo' => null], $reference->equalities, true)) {
+            // A column an equality or IS NULL pins does not affect the order.
+            $pinned = in_array(['column' => $column, 'joinedTo' => null], $reference->equalities, true) || in_array($column, $reference->nulls, true);
+
+            if ($item instanceof OrderKeyword && ! $pinned) {
                 $directions[$item->type->name] = true;
             }
         }

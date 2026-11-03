@@ -185,15 +185,25 @@ final class MySqlDriver implements Driver
      */
     private function firstRow(PDO $session, string $query, array $bindings = []): array
     {
+        return $this->allRows($session, $query, $bindings)[0] ?? [];
+    }
+
+    /**
+     * @param  array<mixed>  $bindings
+     * @return list<array<string, mixed>>
+     */
+    private function allRows(PDO $session, string $query, array $bindings = []): array
+    {
         $start = microtime(true);
         $statement = $session->prepare($query);
         $this->db->bindValues($statement, $this->db->prepareBindings($bindings));
         $statement->execute();
-        $row = $statement->fetch(PDO::FETCH_ASSOC);
+        /** @var list<array<string, mixed>> $rows */
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC);
         $statement->closeCursor();
         $this->db->logQuery($query, $bindings, round((microtime(true) - $start) * 1000, 2));
 
-        return is_array($row) ? $row : [];
+        return $rows;
     }
 
     /**
@@ -311,6 +321,18 @@ final class MySqlDriver implements Driver
         return $indexes;
     }
 
+    public function engine(string $table): string
+    {
+        $row = $this->db->selectOne(
+            'SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?',
+            [$table],
+        );
+
+        $row = array_change_key_case((array) $row, CASE_UPPER);
+
+        return (string) ($row['ENGINE'] ?? '');
+    }
+
     public function rowCount(string $table): int
     {
         $row = $this->onOneSession(fn (PDO $session) => $this->withFreshStatistics($session, fn () => $this->firstRow(
@@ -344,14 +366,47 @@ final class MySqlDriver implements Driver
     }
 
     /**
+     * The index statistics' CARDINALITY of each column that leads a B-tree
+     * index (a later column's counts the distinct prefixes, not its own
+     * values; a FULLTEXT or SPATIAL index's counts the table's rows), the
+     * most distinct of them when several indexes start with it.
+     */
+    public function cardinality(string $table): array
+    {
+        $rows = $this->onOneSession(fn (PDO $session) => $this->withFreshStatistics($session, fn () => $this->allRows(
+            $session,
+            "SELECT COLUMN_NAME, CARDINALITY FROM information_schema.STATISTICS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND SEQ_IN_INDEX = 1
+               AND INDEX_TYPE NOT IN ('FULLTEXT', 'SPATIAL')",
+            [$table],
+        )));
+
+        $cardinality = [];
+
+        foreach ($rows as $row) {
+            $row = array_change_key_case($row, CASE_UPPER);
+            $distinct = (int) ($row['CARDINALITY'] ?? 0);
+
+            // No statistics yet, or an expression index (MySQL 8.0.13+) on no column.
+            if ($distinct > 0 && $row['COLUMN_NAME'] !== null) {
+                $column = (string) $row['COLUMN_NAME'];
+                $cardinality[$column] = max($distinct, $cardinality[$column] ?? 0);
+            }
+        }
+
+        return $cardinality;
+    }
+
+    /**
      * Collect every table access in the plan, wherever MySQL nests it
      * (`query_block.table`, `nested_loop[]`, `ordering_operation`, ...).
      *
      * @param  array<mixed>  $node
      * @param  list<TableAccess>  $accesses
-     * @param  bool  $materialized  whether the node is part of a materialized subquery or derived table
+     * @param  list<string>  $within  the tables whose materialization the node is part of, outermost first
+     * @param  bool  $selectList  whether the node is part of a subquery in the SELECT list
      */
-    private static function walk(array $node, array &$accesses, bool &$filesort, bool &$temporary, bool $materialized = false): void
+    private static function walk(array $node, array &$accesses, bool &$filesort, bool &$temporary, array $within = [], bool $selectList = false): void
     {
         if (($node['using_filesort'] ?? false) === true) {
             $filesort = true;
@@ -361,19 +416,32 @@ final class MySqlDriver implements Driver
             $temporary = true;
         }
 
-        if (isset($node['table_name'], $node['access_type'])) {
+        $table = isset($node['table_name']) ? (string) $node['table_name'] : null;
+
+        if ($table !== null && isset($node['access_type'])) {
             $accesses[] = new TableAccess(
-                table: (string) $node['table_name'],
+                table: $table,
                 accessType: (string) $node['access_type'],
                 key: isset($node['key']) ? (string) $node['key'] : null,
                 rowsExamined: isset($node['rows_examined_per_scan']) ? (int) $node['rows_examined_per_scan'] : null,
-                materialized: $materialized,
+                materialized: $within !== [],
+                within: $within,
+                // A semijoin materializes `<subqueryN>`, a derived table its alias (or `<derivedN>`).
+                derived: isset($node['materialized_from_subquery']) && ! str_starts_with($table, '<subquery'),
+                selectList: $selectList,
             );
         }
 
         foreach ($node as $key => $child) {
             if (is_array($child)) {
-                self::walk($child, $accesses, $filesort, $temporary, $materialized || $key === 'materialized_from_subquery');
+                self::walk(
+                    $child,
+                    $accesses,
+                    $filesort,
+                    $temporary,
+                    $key === 'materialized_from_subquery' ? [...$within, (string) $table] : $within,
+                    $selectList || $key === 'select_list_subqueries',
+                );
             }
         }
     }

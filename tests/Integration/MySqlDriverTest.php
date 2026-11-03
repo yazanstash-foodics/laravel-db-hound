@@ -20,6 +20,8 @@ afterEach(function () {
     }
     Schema::dropIfExists('hound_notes');
     Schema::dropIfExists('hound_growing');
+    Schema::dropIfExists('hound_cardinality');
+    Schema::dropIfExists('hound_myisam_notes');
 });
 
 it('detects a full scan when the server defaults to EXPLAIN JSON format version 2', function () {
@@ -74,6 +76,56 @@ it('counts rows inserted after an earlier row count, without ANALYZE TABLE', fun
 
     expect($driver->rowCount('hound_growing'))->toBeGreaterThanOrEqual(1000)
         ->and(DB::selectOne('SELECT @@SESSION.information_schema_stats_expiry AS expiry')->expiry)->toBe(86400);
+});
+
+it('estimates distinct values from the statistics of the B-tree indexes a column leads', function () {
+    Schema::create('hound_cardinality', function (Blueprint $table) {
+        $table->id();
+        $table->unsignedBigInteger('merchant_id')->index();
+        $table->string('status');
+        $table->string('reference');
+        $table->boolean('is_active');
+        $table->boolean('is_main')->index();
+        $table->enum('kind', ['card', 'cash', 'wallet']);
+        $table->string('note');
+        $table->index(['status', 'reference']);
+        $table->fullText('note');
+    });
+    DB::table('hound_cardinality')->insert(array_map(fn ($i) => [
+        'merchant_id' => $i % 40,
+        'status' => ['open', 'closed'][$i % 2],
+        'reference' => "r{$i}",
+        'is_active' => $i % 2,
+        'is_main' => 0,
+        'kind' => 'card',
+        'note' => "n{$i}",
+    ], range(1, 400)));
+    DB::statement('ANALYZE TABLE hound_cardinality');
+
+    $cardinality = (new MySqlDriver(DB::connection()))->cardinality('hound_cardinality');
+    ksort($cardinality);
+
+    // `reference` is only the second column of an index: its statistics count (status, reference) pairs.
+    // A FULLTEXT index reports the table's rows, not the distinct values of `note`.
+    // `is_active` and `kind` lead no index: the Analyzer estimates them from their type.
+    expect(array_keys($cardinality))->toBe(['id', 'is_main', 'merchant_id', 'status'])
+        ->and($cardinality['id'])->toBeGreaterThan(300)
+        ->and($cardinality['merchant_id'])->toBeGreaterThanOrEqual(30)->toBeLessThanOrEqual(50)
+        ->and($cardinality['status'])->toBeLessThanOrEqual(3)
+        ->and($cardinality['is_main'])->toBe(1);
+});
+
+it('reports each table\'s storage engine', function () {
+    Schema::create('hound_myisam_notes', function (Blueprint $table) {
+        $table->engine = 'MyISAM';
+        $table->id();
+    });
+
+    $driver = new MySqlDriver(DB::connection());
+
+    expect($driver->engine('hound_notes'))->toBe('InnoDB')
+        ->and($driver->engine('hound_myisam_notes'))->toBe('MyISAM')
+        ->and($driver->engine('hound_missing'))->toBe('');
 });
 
 it('never sends a statement that is not a SELECT to EXPLAIN', function (string $sql, array $bindings) {

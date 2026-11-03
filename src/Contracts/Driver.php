@@ -29,6 +29,11 @@ interface Driver
     public function indexes(string $table): array;
 
     /**
+     * The table's storage engine (e.g. `InnoDB`), '' when it has none (a view).
+     */
+    public function engine(string $table): string;
+
+    /**
      * Estimated number of rows in the table.
      */
     public function rowCount(string $table): int;
@@ -37,4 +42,13 @@ interface Driver
      * @return array<string, string> column name => column type
      */
     public function columnTypes(string $table): array;
+
+    /**
+     * Estimated number of distinct values per column, for the columns the
+     * engine keeps statistics on (those that lead an index). The Analyzer
+     * estimates the others from their type.
+     *
+     * @return array<string, int> column name => distinct values
+     */
+    public function cardinality(string $table): array;
 }

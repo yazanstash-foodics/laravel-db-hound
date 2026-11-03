@@ -57,6 +57,11 @@ function fakeDriver(array $plans, array $indexes = [], int $rows = 5000): Driver
             return $table === 'orders' ? $this->indexes : [];
         }
 
+        public function engine(string $table): string
+        {
+            return 'InnoDB';
+        }
+
         public function rowCount(string $table): int
         {
             return $table === 'orders' ? $this->rows : 0;
@@ -67,6 +72,11 @@ function fakeDriver(array $plans, array $indexes = [], int $rows = 5000): Driver
             return $table === 'orders'
                 ? ['id' => 'bigint unsigned', 'status' => 'varchar(20)', 'branch_id' => 'bigint unsigned']
                 : [];
+        }
+
+        public function cardinality(string $table): array
+        {
+            return [];
         }
     };
 }
@@ -212,6 +222,11 @@ it('lists a Fingerprint whose EXPLAIN fails as unparsed without the binding valu
             return $this->inner->indexes($table);
         }
 
+        public function engine(string $table): string
+        {
+            return $this->inner->engine($table);
+        }
+
         public function rowCount(string $table): int
         {
             return $this->inner->rowCount($table);
@@ -220,6 +235,11 @@ it('lists a Fingerprint whose EXPLAIN fails as unparsed without the binding valu
         public function columnTypes(string $table): array
         {
             return $this->inner->columnTypes($table);
+        }
+
+        public function cardinality(string $table): array
+        {
+            return $this->inner->cardinality($table);
         }
     };
 
@@ -260,6 +280,13 @@ it('lists a Fingerprint whose schema inspection fails as unparsed and still anal
             return [];
         }
 
+        public function engine(string $table): string
+        {
+            $this->failOn('engine', $table);
+
+            return 'InnoDB';
+        }
+
         public function rowCount(string $table): int
         {
             $this->failOn('rowCount', $table);
@@ -272,6 +299,13 @@ it('lists a Fingerprint whose schema inspection fails as unparsed and still anal
             $this->failOn('columnTypes', $table);
 
             return $table === 'orders' ? ['status' => 'varchar(20)'] : ['email' => 'varchar(255)'];
+        }
+
+        public function cardinality(string $table): array
+        {
+            $this->failOn('cardinality', $table);
+
+            return [];
         }
 
         private function failOn(string $method, string $table): void
@@ -300,7 +334,7 @@ it('lists a Fingerprint whose schema inspection fails as unparsed and still anal
         ->and($result->unparsed)->toHaveCount(1)
         ->and($result->unparsed[0]->sql)->toBe($broken)
         ->and($result->unparsed[0]->reason)->toBe('inspecting its tables failed (QueryException, SQLSTATE HY000)');
-})->with(['indexes', 'rowCount', 'columnTypes'])->with(['with a Sample' => true, 'without a Sample' => false]);
+})->with(['indexes', 'engine', 'rowCount', 'columnTypes', 'cardinality'])->with(['with a Sample' => true, 'without a Sample' => false]);
 
 /**
  * A Driver that records every EXPLAIN it runs and reports a full scan of the
@@ -332,6 +366,11 @@ function recordingDriver(): Driver
             return [];
         }
 
+        public function engine(string $table): string
+        {
+            return 'InnoDB';
+        }
+
         public function rowCount(string $table): int
         {
             return 5000;
@@ -340,6 +379,11 @@ function recordingDriver(): Driver
         public function columnTypes(string $table): array
         {
             return ['status' => 'varchar(20)', 'branch_id' => 'bigint unsigned', 'note' => 'text'];
+        }
+
+        public function cardinality(string $table): array
+        {
+            return [];
         }
     };
 }
@@ -499,6 +543,11 @@ function typedDriver(): Driver
             return [];
         }
 
+        public function engine(string $table): string
+        {
+            return 'InnoDB';
+        }
+
         public function rowCount(string $table): int
         {
             return 5000;
@@ -521,6 +570,11 @@ function typedDriver(): Driver
                 'branches' => ['id' => 'int', 'name' => 'varchar(50)', 'code' => 'char(3)'],
                 default => [],
             };
+        }
+
+        public function cardinality(string $table): array
+        {
+            return [];
         }
     };
 }

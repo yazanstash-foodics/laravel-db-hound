@@ -1,0 +1,66 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "8.69"
+        },
+        "table": {
+            "table_name": "temp_table",
+            "access_type": "ALL",
+            "rows_examined_per_scan": 55,
+            "rows_produced_per_join": 55,
+            "filtered": "100.00",
+            "cost_info": {
+                "read_cost": "3.19",
+                "eval_cost": "5.50",
+                "prefix_cost": "8.69",
+                "data_read_per_join": "2K"
+            },
+            "used_columns": [
+                "card_id",
+                "amount",
+                "unique_visits",
+                "branches_count"
+            ],
+            "materialized_from_subquery": {
+                "using_temporary_table": true,
+                "dependent": false,
+                "cacheable": true,
+                "query_block": {
+                    "select_id": 2,
+                    "cost_info": {
+                        "query_cost": "557.60"
+                    },
+                    "grouping_operation": {
+                        "using_filesort": true,
+                        "cost_info": {
+                            "sort_cost": "55.21"
+                        },
+                        "table": {
+                            "table_name": "daily_card_insights",
+                            "access_type": "ALL",
+                            "rows_examined_per_scan": 4969,
+                            "rows_produced_per_join": 55,
+                            "filtered": "1.11",
+                            "cost_info": {
+                                "read_cost": "496.88",
+                                "eval_cost": "5.52",
+                                "prefix_cost": "502.40",
+                                "data_read_per_join": "2K"
+                            },
+                            "used_columns": [
+                                "id",
+                                "merchant_id",
+                                "card_id",
+                                "branch_id",
+                                "day",
+                                "amount"
+                            ],
+                            "attached_condition": "((`db_hound_shapes`.`daily_card_insights`.`merchant_id` = 7) and (`db_hound_shapes`.`daily_card_insights`.`day` between '2026-01-01' and '2026-12-31'))"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

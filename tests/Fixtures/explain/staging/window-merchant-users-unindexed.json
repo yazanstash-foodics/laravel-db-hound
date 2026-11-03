@@ -1,0 +1,90 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "72.04"
+        },
+        "ordering_operation": {
+            "using_filesort": true,
+            "cost_info": {
+                "sort_cost": "51.99"
+            },
+            "table": {
+                "table_name": "laravel_table",
+                "access_type": "ALL",
+                "rows_examined_per_scan": 156,
+                "rows_produced_per_join": 51,
+                "filtered": "33.33",
+                "cost_info": {
+                    "read_cost": "14.85",
+                    "eval_cost": "5.20",
+                    "prefix_cost": "20.05",
+                    "data_read_per_join": "41K"
+                },
+                "used_columns": [
+                    "id",
+                    "merchant_id",
+                    "email",
+                    "is_active",
+                    "is_contact_user",
+                    "created_at",
+                    "deleted_at",
+                    "laravel_row"
+                ],
+                "attached_condition": "(`laravel_table`.`laravel_row` <= 1)",
+                "materialized_from_subquery": {
+                    "using_temporary_table": true,
+                    "dependent": false,
+                    "cacheable": true,
+                    "query_block": {
+                        "select_id": 2,
+                        "cost_info": {
+                            "query_cost": "684.23"
+                        },
+                        "windowing": {
+                            "windows": [
+                                {
+                                    "name": "<unnamed window>",
+                                    "using_filesort": true,
+                                    "filesort_key": [
+                                        "`merchant_id`",
+                                        "`created_at`"
+                                    ],
+                                    "functions": [
+                                        "row_number"
+                                    ]
+                                }
+                            ],
+                            "cost_info": {
+                                "sort_cost": "156.63"
+                            },
+                            "table": {
+                                "table_name": "merchant_users",
+                                "access_type": "ALL",
+                                "rows_examined_per_scan": 5221,
+                                "rows_produced_per_join": 156,
+                                "filtered": "3.00",
+                                "cost_info": {
+                                    "read_cost": "511.94",
+                                    "eval_cost": "15.66",
+                                    "prefix_cost": "527.60",
+                                    "data_read_per_join": "122K"
+                                },
+                                "used_columns": [
+                                    "id",
+                                    "merchant_id",
+                                    "email",
+                                    "is_active",
+                                    "is_contact_user",
+                                    "created_at",
+                                    "deleted_at"
+                                ],
+                                "attached_condition": "((`db_hound_shapes`.`merchant_users`.`is_contact_user` = 1) and (`db_hound_shapes`.`merchant_users`.`merchant_id` in (7,8,9)))"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

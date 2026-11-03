@@ -22,7 +22,7 @@ use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Queue\Events\JobProcessing;
 use Illuminate\Queue\Jobs\SyncJob;
-use Illuminate\Redis\Connections\Connection;
+use Illuminate\Redis\Connections\PhpRedisConnection;
 use Illuminate\Redis\RedisManager;
 use Illuminate\Support\Carbon;
 use InvalidArgumentException;
@@ -75,6 +75,7 @@ class DbHoundServiceProvider extends PackageServiceProvider
                     (array) $app->make('config')->get('database.connections', []),
                 ),
             ),
+            lowSelectivityShare: (float) $app->make('config')->get('db-hound.analysis.low_selectivity_share', Analyzer::LOW_SELECTIVITY_SHARE),
         ));
 
         $this->app->bind(AnalysisDrivers::class, fn (Application $app) => new AnalysisDrivers(
@@ -120,16 +121,17 @@ class DbHoundServiceProvider extends PackageServiceProvider
      * A connection of its own to the configured Redis connection, with
      * db-hound's short timeouts: a slow or unreachable Redis costs a captured
      * batch at most `redis.timeout` seconds per attempt, and the app's own
-     * connections keep their settings.
+     * connections keep their settings. Always phpredis (the `redis` PHP
+     * extension), whatever client the app itself uses.
      */
-    private function storeRedisConnection(Application $app): Connection
+    private function storeRedisConnection(Application $app): PhpRedisConnection
     {
         $config = $app->make('config');
         $name = (string) $config->get('db-hound.redis.connection', 'default');
         $redis = (array) $config->get('database.redis', []);
         $timeout = (float) $config->get('db-hound.redis.timeout', 0.05);
 
-        $manager = new RedisManager($app, (string) ($redis['client'] ?? 'phpredis'), [
+        $manager = new RedisManager($app, 'phpredis', [
             'options' => (array) ($redis['options'] ?? []),
             $name => [
                 ...(array) ($redis[$name] ?? []),
@@ -139,6 +141,7 @@ class DbHoundServiceProvider extends PackageServiceProvider
             ],
         ]);
 
+        /** @var PhpRedisConnection */
         return $manager->connection($name);
     }
 

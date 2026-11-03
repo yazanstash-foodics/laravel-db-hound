@@ -223,6 +223,14 @@ return [
     | `EXPLAIN FORMAT=JSON`, inside a read-only transaction whose session
     | `max_execution_time` is `max_execution_time_ms`.
     |
+    | A suggested index leads with its selective equality columns, most
+    | distinct values first (from index statistics), then its weak filters:
+    | `IS NULL` / `IS NOT NULL`, booleans, enums, and equality columns so
+    | low in distinct values that one value matches more than
+    | `low_selectivity_share` of the rows (known only for columns that lead
+    | an index). Weak filters never lead an index. A query with only weak
+    | filters gets no Suggestion: it is listed as unparsed instead.
+    |
     */
 
     'analysis' => [
@@ -235,6 +243,7 @@ return [
         'min_max_ms' => (float) env('DB_HOUND_ANALYSIS_MIN_MAX_MS', 500),
         'max_fingerprints' => (int) env('DB_HOUND_ANALYSIS_MAX_FINGERPRINTS', 200),
         'min_table_rows' => (int) env('DB_HOUND_ANALYSIS_MIN_TABLE_ROWS', 1000),
+        'low_selectivity_share' => (float) env('DB_HOUND_ANALYSIS_LOW_SELECTIVITY_SHARE', 0.1),
 
         'ignore' => [
             'tables' => [

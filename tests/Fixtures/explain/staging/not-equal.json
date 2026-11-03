@@ -1,0 +1,25 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "503.00"
+        },
+        "table": {
+            "table_name": "mt942_statement",
+            "access_type": "ALL",
+            "rows_examined_per_scan": 5000,
+            "rows_produced_per_join": 4499,
+            "filtered": "90.00",
+            "cost_info": {
+                "read_cost": "53.00",
+                "eval_cost": "450.00",
+                "prefix_cost": "503.00",
+                "data_read_per_join": "70K"
+            },
+            "used_columns": [
+                "statement_date"
+            ],
+            "attached_condition": "(`db_hound_shapes`.`mt942_statement`.`statement_date` <> DATE'2026-01-01')"
+        }
+    }
+}

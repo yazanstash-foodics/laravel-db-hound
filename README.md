@@ -38,6 +38,7 @@ Missing indexes usually show up only in production. Local and CI databases are t
 - PHP 8.4
 - Laravel 13
 - MySQL 8.0 or later. MariaDB is best-effort.
+- The `redis` PHP extension (phpredis). Predis is not supported: db-hound always talks to Redis through phpredis, whatever client your app uses.
 - Redis, for the default Store. Single-server apps can use the `file` Store instead.
 - A running Laravel scheduler, for flush and prune.
 
@@ -231,6 +232,7 @@ Every key in `config/db-hound.php`, with its environment variable and default. K
 | `analysis.min_max_ms` | `DB_HOUND_ANALYSIS_MIN_MAX_MS` | `500` | …or its slowest run took at least this many ms. |
 | `analysis.max_fingerprints` | `DB_HOUND_ANALYSIS_MAX_FINGERPRINTS` | `200` | Most Fingerprints explained per run, highest impact (count × avg ms) first. |
 | `analysis.min_table_rows` | `DB_HOUND_ANALYSIS_MIN_TABLE_ROWS` | `1000` | Tables with fewer rows (the `information_schema.TABLES` estimate) get no Suggestion, because MySQL scans them whatever their indexes. |
+| `analysis.low_selectivity_share` | `DB_HOUND_ANALYSIS_LOW_SELECTIVITY_SHARE` | `0.1` | An equality column whose values each match more than this share of the table's rows on average (1 / its index statistics `CARDINALITY`, known for columns that lead an index), so with fewer than 10 distinct values by default, is a weak filter. Booleans, enums, `IS NULL` and `IS NOT NULL` are always weak filters. Weak filters go after the selective equality columns and never lead an index; a query with only weak filters gets no Suggestion. |
 | `analysis.ignore.tables` | none | `['migrations', 'jobs', 'job_batches', 'failed_jobs', 'sessions', 'cache', 'cache_locks', 'telescope_*']` | Fingerprints touching these tables are never explained (names without the table prefix, `*` wildcards allowed). db-hound's own table is always ignored. |
 | `analysis.ignore.statements` | none | `['SHOW', 'SET']` | Fingerprints starting with one of these keywords are never explained. |
 | `analysis.ignore.schemas` | none | `['information_schema', 'performance_schema']` | Fingerprints reading a table of one of these schemas are never explained. |
@@ -256,6 +258,7 @@ The Report is Markdown with a fixed structure. It contains only normalized SQL (
 - **Capture coverage:** 2026-10-02 08:15:00 UTC → 2026-11-01 09:59:00 UTC
 - **Fingerprints analyzed:** 412 (1834520 captured queries)
 - **Fingerprints explained:** 57
+- **Fingerprint accounting:** 57 explained + 4 skipped by row threshold + 1 no Sample available + 12 skipped by the explain cap + 301 below count/latency thresholds + 9 skipped by ignore lists + 28 not a SELECT, UPDATE or DELETE = 412 analyzed
 - **Thresholds:**
   - Fingerprint count: ≥ 10
   - …
@@ -269,32 +272,62 @@ The Report is Markdown with a fixed structure. It contains only normalized SQL (
 | **Connections** | The captured connections, with the analysis connection when it is mapped to another one (`mysql (analyzed on mysql_replica)`). |
 | **Capture coverage** | Earliest first-seen to latest last-seen time across all stored Fingerprints, or `no captured queries`. |
 | **Fingerprints analyzed** | Fingerprints in `db_hound_queries`, and the total number of queries they represent. Captured queries are sampled, so multiply by 1 / `sample_rate` for an estimate of the real traffic. |
-| **Fingerprints explained** | How many qualifying Fingerprints were explained. |
+| **Fingerprints explained** | How many qualifying Fingerprints were explained and looked at for Suggestions (the `explained` outcome below). |
+| **Fingerprint accounting** | What became of every analyzed Fingerprint, one outcome each, summed to **Fingerprints analyzed**; outcomes no Fingerprint had are left out. `explained`: `EXPLAIN` ran and its plan was looked at for Suggestions. `skipped by row threshold`: `EXPLAIN` ran, but every table it flagged is under the Table rows threshold. `EXPLAIN failed`: listed under "Unparsed queries". `no Sample available`: the Fingerprint can be explained only with a Sample and has none (also listed under "Unparsed queries"). `skipped by the explain cap`: qualified, but past the Fingerprints explained cap. `below count/latency thresholds`, `skipped by ignore lists` (ignored tables, statements or schemas), `not a SELECT, UPDATE or DELETE`: never explained. `other`: looking up its tables (their columns, indexes or row counts) failed, before or after `EXPLAIN` (listed under "Unparsed queries"). |
 | **Thresholds** | The qualification settings used: Fingerprint count, Fingerprint latency, Fingerprints explained, Table rows, Ignored tables, Ignored statements, Ignored schemas. |
 | **Suggestions** | Number of Suggestions below. |
 | **Unparsed queries** | Number of entries in the "Unparsed queries" section. |
 
-### Suggestions
+When any qualification threshold (Fingerprint count, average or max latency, Table rows) is looser than the package default, a warning opens the Report, above the header, naming each relaxed threshold next to its default:
 
-A `## Suggestions` section follows, with Suggestions ranked by impact (`count × avg ms`), highest first. If there are none, it says `No Suggestions.` Each Suggestion looks like this:
+```markdown
+# db-hound Report
+
+> **Warning: relaxed thresholds.** These thresholds are looser than the package defaults:
+>
+> - Fingerprint count: ≥ 1 (default ≥ 10)
+> - Table rows: ≥ 0 (default ≥ 1,000)
+>
+> Suggestions on small tables are likely noise: MySQL scans a small table whatever its indexes. Rare or fast Fingerprints cost little even unindexed.
+```
+
+A coding agent reading such a Report should treat Suggestions on tables with few rows, or serving rare or fast Fingerprints, as noise unless the engineer says otherwise. With the default thresholds there is no warning.
+
+### Summary
+
+A `## Summary` section follows the header: one row per Suggestion, ranked by impact (`count × avg ms`), highest first, so the whole Report fits on one screen. If there are none, it says `No Suggestions.` and no table sections follow.
+
+```markdown
+## Summary
+
+| Rank | Table | Proposed columns | Kind | Reasons | Impact | Fingerprints served |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | `orders` | `branch_id`, `status`, `created_at` | extend `orders_branch_id_index` | no index used, filesort | 50,000.00 | 2 |
+| 2 | `payments` | `customer_id` | new | full scan | 9,000.00 | 1 |
+```
+
+| Column | Meaning |
+| --- | --- |
+| **Rank** | The Suggestion's rank by impact. Its heading in its table's section starts with the same number. |
+| **Connection** | The captured connection of the table. Only present when the Suggestions span more than one connection, since two connections can each have a table of the same name. |
+| **Table** | The table to index (see **Table** below). |
+| **Proposed columns** | The proposed index columns, in order. |
+| **Kind** | `new`, or `extend <index>`: the existing index the Suggestion replaces. |
+| **Reasons** | The symptoms found in the plan. |
+| **Impact** | count × avg ms, summed over the Fingerprints the index serves. |
+| **Fingerprints served** | How many Fingerprints the index serves. |
+
+### Tables
+
+Then one `## <table>` section per connection and table that has Suggestions, ordered by the table's **Total impact** (the summed impact of its Suggestions), highest first. When the Suggestions span more than one connection, the heading also names the connection, as in ``## `orders` (reporting)``, so that two connections' tables of the same name get distinct sections. Each section gives the table's context once (row count, existing indexes, column types), then that table's Suggestions, highest impact first, each headed with its rank from the summary:
 
 ````markdown
-### 1. `orders` (`branch_id`, `status`, `created_at`) — extends `orders_branch_id_index`
+## `orders`
 
 - **Table:** `orders`
 - **Connection:** mysql
 - **Table rows (estimate):** 182,340
-- **Proposed columns (in order):** `branch_id`, `status`, `created_at`
-- **Proposed index name:** `orders_branch_id_status_created_at_index`
-- **Kind:** extend existing index `orders_branch_id_index` (`branch_id`) to (`branch_id`, `status`, `created_at`): add this one first, then drop `orders_branch_id_index` (…)
-- **Reasons:** no index used, filesort
-- **Note:** filesort remains; consider `(branch_id, created_at, status)` if the range on `status` matches most rows.
-
-**EXPLAIN summary**
-
-| type | key | rows | extras |
-| --- | --- | --- | --- |
-| ref | orders_branch_id_index | 48,211 | Using filesort |
+- **Total impact:** 50,000.00
 
 **Existing indexes on `orders`**
 
@@ -306,6 +339,20 @@ A `## Suggestions` section follows, with Suggestions ranked by impact (`count ×
 - `branch_id`: bigint unsigned
 - `status`: varchar(20)
 - `created_at`: timestamp
+
+### 1. `orders` (`branch_id`, `status`, `created_at`) — extends `orders_branch_id_index`
+
+- **Proposed columns (in order):** `branch_id`, `status`, `created_at`
+- **Proposed index name:** `orders_branch_id_status_created_at_index`
+- **Kind:** extend existing index `orders_branch_id_index` (`branch_id`), chosen because it is used by the current plan, to (`branch_id`, `status`, `created_at`): add this one first, then drop `orders_branch_id_index` (…)
+- **Reasons:** no index used, filesort
+- **Note:** filesort remains; consider `(branch_id, created_at, status)` if the range on `status` matches most rows.
+
+**EXPLAIN summary**
+
+| type | key | rows | extras |
+| --- | --- | --- | --- |
+| ref | orders_branch_id_index | 48,211 | Using filesort |
 
 **Impact**
 
@@ -320,28 +367,36 @@ select * from `orders` where `branch_id` = ? and `status` in (?) order by `creat
 ```
 ````
 
+The table's fields, which apply to each of its Suggestions:
+
 | Field | Meaning |
 | --- | --- |
-| heading | Rank, table, proposed columns, and `— extends <index>` when the Suggestion extends an existing index. |
 | **Table** | The table to index, as MySQL names it: the physical name, including the connection's table `prefix` (`config/database.php`) when it has one. `tables.allow`/`deny` and `analysis.ignore.tables` take names without the prefix, but the Report shows the name the SQL used. |
 | **Connection** | The captured connection whose queries need the index. Write the migration for that connection's database. |
 | **Table rows (estimate)** | Row count from `information_schema.TABLES`. It is an estimate, but it is enough to judge how expensive the DDL will be. |
-| **Proposed columns (in order)** | Index columns in order: equality columns, then `IN` lists and range columns, then sort or group columns. **Keep this order.** |
+| **Total impact** | The summed impact (count × avg ms) of the table's Suggestions, which orders the table sections. |
+| **Existing indexes on `<table>`** | Every index on the table, listed once for all its Suggestions: `name (columns)`, then `unique` when it is unique, its type when it is not a B-tree (for example `FULLTEXT`), and `invisible` when it is invisible. |
+| **Column types** | MySQL column type of each column the table's Suggestions propose, listed once. |
+
+Each Suggestion's fields:
+
+| Field | Meaning |
+| --- | --- |
+| heading | Rank (as in the summary), table, proposed columns, and `— extends <index>` when the Suggestion extends an existing index. |
+| **Proposed columns (in order)** | Index columns in order: selective equality columns (most distinct values first, by index statistics or the column type; ties and columns without an estimate alphabetically, unless another served query or the extended index needs them in another order), then weak filters (`IS NULL`, booleans, enums, columns with few distinct values; an `IS NOT NULL` only when nothing follows it), then `IN` lists and range columns, then sort or group columns. A weak filter never leads: without a selective equality before it, it is left out. Trailing primary key columns are left out too: InnoDB appends the primary key to every secondary index, so `(merchant_id, created_at)` already serves `ORDER BY created_at, id` (on InnoDB tables only: other engines, such as MyISAM, keep the key in the proposed columns). **Keep this order**, and don't add the primary key back. |
 | **Proposed index name** | `{table}_{columns}_index`, lowercase, built from the physical table name (so it includes any table prefix). This is the name Laravel gives the index by default when the connection's `prefix_indexes` is on, as it is in Laravel's default config. |
-| **Kind** | `new index`, or `extend existing index <name> (<old columns>) to (<new columns>)`: replace that index with the proposed one, which starts with its columns. |
+| **Kind** | `new index`, or `extend existing index <name> (<old columns>), chosen because it is <why>, to (<new columns>)`: replace that index with the proposed one, which starts with its columns. `<why>` says which of the indexes it could extend this one is: `used by the current plan` (EXPLAIN reports it as the `key` of the plan in the EXPLAIN summary, or among the indexes an `index_merge` reads), else `the longest prefix of the new index`, ties going to the one `with the most selective first column` (when the first columns are as selective, the tie goes to the alphabetically first and the Report says only `the longest prefix of the new index`). On InnoDB it ends with a warning when the old index, with the primary key appended, serves an order the new one does not (see [extending an existing index](#writing-the-migration-extending-an-existing-index)). |
 | **Reasons** | Symptoms found in the plan: `full scan` (`type` is `ALL`), `no index used` (no key, many rows examined), `filesort` (`Using filesort`), `temporary table` (`Using temporary`). |
 | **Note** | Zero or more. When a range column keeps the index from serving the `ORDER BY` or `GROUP BY`, this names the equality → sort → range alternative. db-hound can't know how selective the range is, so the choice is yours (see below). |
-| **EXPLAIN summary** | `type` (access type), `key` (index used, `—` for none), `rows` (rows examined), and `extras` (`Using filesort` and `Using temporary`) of the table in the current plan. |
-| **Existing indexes on `<table>`** | Every index on the table: `name (columns)`, then `unique` when it is unique, its type when it is not a B-tree (for example `FULLTEXT`), and `invisible` when it is invisible. |
-| **Column types** | MySQL column type of each proposed column. |
+| **EXPLAIN summary** | `type` (access type), `key` (index used, `—` for none), `rows` (rows examined), and `extras` (`Using filesort` and `Using temporary`) of the table in the current plan: the plan of the most impactful served Fingerprint. |
 | **Impact** | Summed over the Fingerprints the index serves: `count`, `avg ms`, `max ms`, and `impact` = count × avg ms. |
 | **Served Fingerprints (N)** | Every Fingerprint the index would serve, highest impact first, as normalized SQL. |
 
 Suggestions are already **consolidated** and **deduplicated**:
 
-- When one Suggestion's columns are a left prefix of another's on the same table, only the longer one is kept, and it serves both sets of Fingerprints.
-- A Suggestion already covered by an existing index (as a left prefix) is dropped.
-- When an existing non-unique B-tree index is a strict left prefix of the proposed columns, the Suggestion extends it rather than adding another index.
+- When one Suggestion's index also serves another's on the same table, only one is kept, and it serves both sets of Fingerprints with their impact summed. An index serves a query when the query's columns are its left prefix, taking its equality columns in any order and its weak filters in any order or not at all (a query filters the rows the index returns on a weak filter the index leaves out). So `(a, b, c)` and `(b, a, c)` with `a` and `b` equality columns are one index, and `(merchant_id, deleted_at, created_at)` and `(merchant_id, is_contact_user, created_at)` become `(merchant_id, created_at)`. Equality columns before a range or sort are never left out: `(a = ?, b > ?)` and `(b = ?, a > ?)` stay apart. A Suggestion several others serve goes to the one with the most impact.
+- A Suggestion an existing index already serves, by the same rule, is dropped. An existing index counts with the primary key InnoDB appends to it: `(a, b)` serves a query that needs `(a, b, id)`, but `(a, c)` does not serve one that needs `(a, id)`.
+- When an existing non-unique B-tree index is a strict left prefix of the proposed columns (equality columns in any order), the Suggestion extends it rather than adding another index. When several are, it extends the one EXPLAIN reports as the `key` of a served Fingerprint's plan (the most impactful one first), since replacing that index is what changes the plan, reordering its equality columns to start with it; else the longest one, and of equally long ones the one whose first column is the most selective.
 
 ### Unparsed queries
 
@@ -355,7 +410,7 @@ The Report ends with `## Unparsed queries` (`None.` when it is empty). It lists 
   ```
 ````
 
-Each entry has the connection, a reason (for example the SQL parser could not handle the query, `EXPLAIN` failed with an SQLSTATE, the query reads another database, or `cannot EXPLAIN without a Sample`), and the normalized SQL. Errors are reported by class and SQLSTATE only, because database error messages can contain binding values.
+Each entry has the connection, a reason (for example the SQL parser could not handle the query, `EXPLAIN` failed with an SQLSTATE, the query reads another database, the table is filtered only on low-selectivity predicates such as `deleted_at IS NULL` that an index would barely narrow, or `cannot EXPLAIN without a Sample`), and the normalized SQL. A Fingerprint appears at most once per reason, however many of its table accesses show it (a self-join whose table references share a name, for example). A full scan of a derived table (a subquery in `FROM`, such as Laravel's `laravel_table` or `latestOfMany`) is never listed: db-hound analyzes the tables its query reads instead, and the tables of subqueries in the `SELECT` list (`withCount`, `withSum`). Errors are reported by class and SQLSTATE only, because database error messages can contain binding values.
 
 ## Dump format
 
@@ -395,9 +450,9 @@ Each entry has the connection, a reason (for example the SQL parser could not ha
 
 ### Reading a Suggestion
 
-1. **Start at the top.** Suggestions are ranked by impact (count × avg ms). The first ones save the most database time.
+1. **Start at the Summary.** It lists every Suggestion ranked by impact (count × avg ms); the first ones save the most database time. Each table's section then holds its Suggestions, under the same rank numbers. Read a table's Suggestions together, since they share its existing indexes.
 2. **Check the header.** Confirm with the engineer which environment the Report is from (**Connections**), how much traffic it covers (**Capture coverage**, **Fingerprints analyzed**), and whether the thresholds look right.
-3. **For each Suggestion, gather:**
+3. **For each Suggestion, gather** (the table, connection, row count, existing indexes and column types are in its table's section):
    - the table (its physical name, including any connection table prefix), the connection, and the **Proposed columns (in order)**: this is the index to create, and the order matters;
    - the **Kind**: `new index`, or `extend existing index`;
    - the **Existing indexes**: make sure the codebase's migrations agree with them. If they don't, ask the engineer, because production may have drifted from the migrations;
@@ -441,7 +496,7 @@ return new class extends Migration
 
 ### Writing the migration: extending an existing index
 
-When **Kind** says `extend existing index <old> (…) to (…)`, the proposed index starts with all of the old index's columns, so it serves every query the old one did. Replace the old index: **add the new index first, then drop the old one**, in that order:
+When **Kind** says `extend existing index <old> (…) to (…)`, the proposed index starts with all of the old index's columns, so it serves every query the old one did on those columns. Replace the old index: **add the new index first, then drop the old one**, in that order:
 
 ```php
 public function up(): void
@@ -470,6 +525,7 @@ public function down(): void
 - Dropping the old index first fails if a foreign key needs it (MySQL error 1553), and it leaves the table without an index on those columns until the new one is built. Adding first avoids both: once the new index exists, MySQL lets the foreign key use it.
 - Extension is only proposed for non-unique, visible B-tree indexes. A unique index is never extended, because a longer index would no longer enforce the uniqueness.
 - Check the codebase for index hints (`USE INDEX`, `FORCE INDEX`) or raw SQL that names the old index before you drop it.
+- On InnoDB the old index also holds the primary key right after its columns, so it serves, say, `WHERE branch_id = ? ORDER BY id`; the new index, with other columns before the key, does not. When **Kind** warns about it, look for queries that sort or seek on the primary key right after the old columns (db-hound may have left a trailing `id` out of an earlier Suggestion for exactly this reason). If one relies on it, keep the old index and tell the engineer.
 - If you prefer to keep the old index for one release (to roll out safely, or because something else depends on it), make the drop a separate, later migration, and tell the engineer the table temporarily has both.
 
 ### Large tables (online DDL)

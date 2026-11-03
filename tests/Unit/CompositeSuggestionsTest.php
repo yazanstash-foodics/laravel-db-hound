@@ -57,6 +57,11 @@ function schemaDriver(array $plans, array $indexes = []): Driver
             return [new Index('PRIMARY', ['id'], true), ...$this->indexes[$table] ?? []];
         }
 
+        public function engine(string $table): string
+        {
+            return 'InnoDB';
+        }
+
         public function rowCount(string $table): int
         {
             return ['branches' => 50, 'orders' => 5000, 'items' => 8000][$table] ?? 0;
@@ -65,6 +70,11 @@ function schemaDriver(array $plans, array $indexes = []): Driver
         public function columnTypes(string $table): array
         {
             return self::COLUMNS[$table] ?? [];
+        }
+
+        public function cardinality(string $table): array
+        {
+            return [];
         }
     };
 }
@@ -112,7 +122,7 @@ it('appends the sort columns after equality columns when no range blocks the sor
 
     expect($result->unparsed)->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
-        ->and($result->suggestions[0]->columns)->toBe(['status', 'branch_id', 'created_at'])
+        ->and($result->suggestions[0]->columns)->toBe(['branch_id', 'status', 'created_at'])
         ->and($result->suggestions[0]->notes)->toBe([]);
 });
 
@@ -137,7 +147,7 @@ it('adds no note when the index satisfies the sort', function (string $sql, arra
 })->with([
     'sorted by the range column' => ['select * from `orders` where `status` = ? and `total` > ? order by `total` desc', ['status', 'total']],
     'sorted by the range column, then another' => ['select * from `orders` where `status` = ? and `total` > ? order by `total`, `created_at`', ['status', 'total', 'created_at']],
-    'sorted by an equality column' => ['select * from `orders` where `status` = ? and `branch_id` = ? order by `status`, `created_at`', ['status', 'branch_id', 'created_at']],
+    'sorted by an equality column' => ['select * from `orders` where `status` = ? and `branch_id` = ? order by `status`, `created_at`', ['branch_id', 'status', 'created_at']],
     'no range' => ['select * from `orders` where `status` = ? order by `created_at` limit 20', ['status', 'created_at']],
 ]);
 
@@ -266,7 +276,7 @@ it('reads a range against an interval expression as a range', function (string $
 })->with([
     'trailing unit' => ['select * from `orders` where `status` = ? and `created_at` >= now() - interval ? day'],
     'unit before AND' => ['select * from `orders` where `created_at` > now() - interval 3 day and `status` = ?'],
-    'unit-named column after an interval' => ['select * from orders where created_at > now() - interval 3 day and status = ? and day = ?', ['status', 'day', 'created_at']],
+    'unit-named column after an interval' => ['select * from orders where created_at > now() - interval 3 day and status = ? and day = ?', ['day', 'status', 'created_at']],
     'date_sub' => ['select * from `orders` where `status` = ? and `created_at` > date_sub(now(), interval ? day)'],
 ]);
 

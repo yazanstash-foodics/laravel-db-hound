@@ -12,6 +12,7 @@ final readonly class ReportContext
     /**
      * @param  list<string>  $connections
      * @param  array<string, string>  $thresholds  label => value
+     * @param  array<string, array{string, string}>  $relaxed  the thresholds looser than the package defaults: label => [value, default]
      */
     public function __construct(
         public DateTimeInterface $generatedAt,
@@ -21,5 +22,6 @@ final readonly class ReportContext
         public int $fingerprints,
         public int $queries,
         public array $thresholds,
+        public array $relaxed = [],
     ) {}
 }

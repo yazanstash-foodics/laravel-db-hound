@@ -96,7 +96,7 @@ it('never reports ignored tables or information_schema, SHOW and SET statements'
 
     $report = analyzedReport();
     // The header names the ignore lists themselves.
-    $body = substr($report, (int) strpos($report, '## Suggestions'));
+    $body = substr($report, (int) strpos($report, '## Summary'));
 
     expect($report)->toContain('**Fingerprints explained:** 1')
         ->toContain('**Unparsed queries:** 0')
@@ -114,7 +114,8 @@ it('suggests nothing on a table under the row threshold, even for a full scan', 
     persistFingerprint('select * from `hound_statuses` where `status` = ?', count: 100, avgMs: 900.0);
 
     expect(analyzedReport())
-        ->toContain('**Fingerprints explained:** 1')
+        ->toContain('**Fingerprints explained:** 0')
+        ->toContain('**Fingerprint accounting:** 1 skipped by row threshold = 1 analyzed')
         ->toContain('No Suggestions.')
         ->toContain('**Unparsed queries:** 0');
 });
@@ -155,6 +156,37 @@ it('orders Suggestions by impact, highest first', function () {
         ->and(strpos($report, '100,000.00'))->toBeLessThan(strpos($report, '60,000.00'));
 });
 
+it('summarizes every Suggestion, then groups them by table, tables by summed impact', function () {
+    Schema::table('hound_orders', function (Blueprint $table) {
+        $table->string('kind')->default('food');
+    });
+
+    persistFingerprint('select * from `hound_branches` where `status` = ?', count: 100, avgMs: 900.0);
+    persistFingerprint('select * from `hound_orders` where `status` = ?', count: 100, avgMs: 600.0);
+    persistFingerprint('select * from `hound_orders` where `kind` = ?', count: 100, avgMs: 400.0);
+
+    $report = analyzedReport();
+    preg_match_all('/^#{2,3} .+$/m', $report, $headings);
+
+    expect($report)->toContain(<<<'MD'
+| 1 | `hound_branches` | `status` | new | full scan | 90,000.00 | 1 |
+| 2 | `hound_orders` | `status` | new | full scan | 60,000.00 | 1 |
+| 3 | `hound_orders` | `kind` | new | full scan | 40,000.00 | 1 |
+MD)
+        ->and($headings[0])->toBe([
+            '## Summary',
+            '## `hound_orders`',
+            '### 2. `hound_orders` (`status`)',
+            '### 3. `hound_orders` (`kind`)',
+            '## `hound_branches`',
+            '### 1. `hound_branches` (`status`)',
+            '## Unparsed queries',
+        ])
+        ->and(substr_count($report, '**Existing indexes on `hound_orders`**'))->toBe(1)
+        ->and($report)->toContain('- **Total impact:** 100,000.00')
+        ->toContain("**Column types**\n\n- `status`: varchar(255)\n- `kind`: varchar(255)\n");
+});
+
 it('lists the thresholds used in the Report header', function () {
     expect(analyzedReport())->toContain(<<<'MD'
 - **Thresholds:**
@@ -187,5 +219,53 @@ it('lists configured thresholds in the Report header', function () {
   - Ignored tables: `audit_*`, `db_hound_queries`
   - Ignored statements: none
   - Ignored schemas: `reporting`
+MD);
+});
+
+it('accounts for every analyzed Fingerprint in the Report header', function () {
+    config()->set('db-hound.analysis.max_fingerprints', 3);
+    qualificationTable('hound_statuses', 50);
+
+    persistFingerprint('select * from `hound_orders` where `status` = ?', count: 100, avgMs: 900.0);
+    persistFingerprint('select * from `hound_statuses` where `status` = ?', count: 100, avgMs: 800.0);
+    persistFingerprint('select * from `hound_missing` where `status` = ?', count: 100, avgMs: 700.0);
+    persistFingerprint('select * from `hound_branches` where `status` = ?', count: 100, avgMs: 60.0);
+    persistFingerprint('select * from `hound_orders` where `status` = ? limit 1', count: 2, avgMs: 900.0);
+    persistFingerprint('select * from `migrations` where `migration` = ?', count: 100, avgMs: 900.0);
+    persistFingerprint('insert into `hound_orders` (`status`) values (?)', count: 100, avgMs: 900.0);
+
+    expect(analyzedReport())
+        ->toContain('**Fingerprints analyzed:** 7 (602 captured queries)')
+        ->toContain('**Fingerprints explained:** 1')
+        ->toContain('**Fingerprint accounting:** 1 explained + 1 skipped by row threshold + 1 EXPLAIN failed'
+            .' + 1 skipped by the explain cap + 1 below count/latency thresholds + 1 skipped by ignore lists'
+            ." + 1 not a SELECT, UPDATE or DELETE = 7 analyzed\n");
+});
+
+it('prints no threshold warning with the default thresholds', function () {
+    persistFingerprint('select * from `hound_orders` where `status` = ?', count: 100, avgMs: 900.0);
+
+    expect(analyzedReport())->toStartWith("# db-hound Report\n\n- **Generated at:**")
+        ->not->toContain('relaxed thresholds');
+});
+
+it('warns at the top of the Report about each threshold relaxed below its default', function () {
+    config()->set('db-hound.analysis.min_count', 1);
+    config()->set('db-hound.analysis.min_avg_ms', 0);
+    config()->set('db-hound.analysis.min_max_ms', 1000);
+    config()->set('db-hound.analysis.min_table_rows', 0);
+
+    expect(analyzedReport())->toStartWith(<<<'MD'
+# db-hound Report
+
+> **Warning: relaxed thresholds.** These thresholds are looser than the package defaults:
+>
+> - Fingerprint count: ≥ 1 (default ≥ 10)
+> - Fingerprint average latency: ≥ 0 ms (default ≥ 50 ms)
+> - Table rows: ≥ 0 (default ≥ 1,000)
+>
+> Suggestions on small tables are likely noise: MySQL scans a small table whatever its indexes. Rare or fast Fingerprints cost little even unindexed.
+
+- **Generated at:**
 MD);
 });

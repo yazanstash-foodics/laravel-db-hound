@@ -4,14 +4,19 @@ namespace Foodics\DbHound\Analysis;
 
 final readonly class AnalysisResult
 {
+    /** How many Fingerprints were explained and looked at for Suggestions. */
+    public int $explained;
+
     /**
      * @param  list<Suggestion>  $suggestions  ranked, most impactful first
      * @param  list<UnparsedQuery>  $unparsed
-     * @param  int  $explained  how many qualifying Fingerprints were sent to EXPLAIN
+     * @param  FingerprintAccounting  $accounting  what became of every Fingerprint analyzed
      */
     public function __construct(
         public array $suggestions,
         public array $unparsed,
-        public int $explained = 0,
-    ) {}
+        public FingerprintAccounting $accounting = new FingerprintAccounting,
+    ) {
+        $this->explained = $accounting->of(FingerprintOutcome::Explained);
+    }
 }

@@ -58,7 +58,8 @@ it('suggests an index on an unindexed equality column after flush and analyze', 
     $report = Storage::disk('local')->get('db-hound/latest.md');
 
     expect($report)
-        ->toContain('## Suggestions')
+        ->toContain('## Summary')
+        ->toContain('## `hound_orders`')
         ->and(substr_count($report, '### '))->toBe(1)
         ->and($report)->toContain('`hound_orders`')
         ->toContain('(`customer_email`)')
@@ -77,8 +78,7 @@ it('suggests nothing for the same query on an indexed column', function () {
     $report = Storage::disk('local')->get('db-hound/latest.md');
 
     expect($report)
-        ->toContain('## Suggestions')
-        ->toContain('No Suggestions.')
+        ->toContain("## Summary\n\nNo Suggestions.\n")
         ->toContain('**Fingerprints analyzed:** 1 (50 captured queries)')
         ->and(substr_count($report, '### '))->toBe(0);
 });
@@ -322,8 +322,35 @@ it('proposes extending an existing index that is a left prefix of the needed one
         ->toContain('**Unparsed queries:** 0')
         ->and(substr_count($report, '### '))->toBe(1)
         ->and($report)->toContain('### 1. `hound_orders` (`branch_id`, `placed_at`) — extends `hound_orders_branch_id_index`')
-        ->toContain('**Kind:** extend existing index `hound_orders_branch_id_index` (`branch_id`) to (`branch_id`, `placed_at`): add this one first, then drop `hound_orders_branch_id_index` (dropping it first fails if a foreign key needs it, and leaves the table without an index on `branch_id` meanwhile)')
+        ->toContain('**Kind:** extend existing index `hound_orders_branch_id_index` (`branch_id`), chosen because it is used by the current plan, to (`branch_id`, `placed_at`): add this one first, then drop `hound_orders_branch_id_index` (dropping it first fails if a foreign key needs it, and leaves the table without an index on `branch_id` meanwhile)')
         ->toContain('filesort');
+});
+
+it('extends the index the optimizer chose, not the one the cardinality order would put first', function () {
+    config()->set('db-hound.enabled', false);
+    Schema::table('hound_orders', function (Blueprint $table) {
+        $table->unsignedBigInteger('region_id')->default(0)->index();
+    });
+    // 20 regions, fewer than the 40 branches, but region 999 has a single order: EXPLAIN reads it by its index.
+    DB::statement('UPDATE hound_orders SET region_id = IF(id = 1, 999, id % 19)');
+    DB::statement('ANALYZE TABLE hound_orders');
+    config()->set('db-hound.enabled', true);
+
+    for ($i = 0; $i < 50; $i++) {
+        DB::table('hound_orders')->where('branch_id', 7)->where('region_id', 999)->orderBy('placed_at')->get();
+    }
+
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
+    $this->artisan('db-hound:analyze')->assertSuccessful();
+
+    $report = Storage::disk('local')->get('db-hound/latest.md');
+
+    expect($report)
+        ->toContain('**Unparsed queries:** 0')
+        ->and(substr_count($report, '### '))->toBe(1)
+        ->and($report)->toContain('| ref | hound_orders_region_id_index |')
+        ->toContain('### 1. `hound_orders` (`region_id`, `branch_id`, `placed_at`) — extends `hound_orders_region_id_index`')
+        ->toContain('**Kind:** extend existing index `hound_orders_region_id_index` (`region_id`), chosen because it is used by the current plan, to (`region_id`, `branch_id`, `placed_at`): add');
 });
 
 it('suggests an index on the inner table of a whereHas-style EXISTS subquery', function () {
@@ -359,6 +386,69 @@ it('suggests an index on the inner table of a whereHas-style EXISTS subquery', f
         ->and(substr_count($report, '### '))->toBe(1)
         ->and($report)->toContain('**Table:** `hound_order_items`')
         ->toContain("**Proposed columns (in order):** `kind`\n");
+});
+
+it('analyzes the inner query of a derived table, never listing the derived table itself', function () {
+    for ($i = 0; $i < 50; $i++) {
+        // The shape of a window-limited eager load (`laravel_table`).
+        DB::query()
+            ->fromSub(fn ($query) => $query->from('hound_orders')
+                ->selectRaw('*, row_number() over (partition by `branch_id` order by `placed_at` asc) as `laravel_row`')
+                ->where('customer_email', 'secret-binding-value@example.test'), 'laravel_table')
+            ->where('laravel_row', '<=', 3)
+            ->orderBy('laravel_row')
+            ->get();
+    }
+
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
+    $this->artisan('db-hound:analyze')->assertSuccessful();
+
+    $report = Storage::disk('local')->get('db-hound/latest.md');
+
+    expect($report)
+        ->toContain('**Unparsed queries:** 0')
+        ->not->toContain('laravel_table`, but')
+        ->and(substr_count($report, '### '))->toBe(1)
+        ->and($report)->toContain('**Table:** `hound_orders`')
+        ->toContain("**Proposed columns (in order):** `customer_email`\n");
+});
+
+it('suggests an index on the table of a withCount-style subquery in the SELECT list', function () {
+    Schema::create('hound_order_items', function (Blueprint $table) {
+        $table->id();
+        $table->unsignedBigInteger('hound_order_id');
+        $table->string('kind');
+    });
+
+    $items = array_map(fn (int $i) => ['hound_order_id' => $i % 2000 + 1, 'kind' => ['food', 'drink', 'extra'][$i % 3]], range(1, 3000));
+
+    foreach (array_chunk($items, 500) as $chunk) {
+        DB::table('hound_order_items')->insert($chunk);
+    }
+
+    DB::statement('ANALYZE TABLE hound_order_items');
+
+    for ($i = 0; $i < 50; $i++) {
+        DB::table('hound_orders')
+            ->select('hound_orders.*')
+            ->selectSub(fn ($query) => $query->from('hound_order_items')
+                ->selectRaw('count(*)')
+                ->whereColumn('hound_orders.id', 'hound_order_items.hound_order_id')
+                ->where('hound_order_items.kind', 'drink'), 'drinks_count')
+            ->where('branch_id', 7)
+            ->get();
+    }
+
+    $this->artisan('db-hound:flush --force')->assertSuccessful();
+    $this->artisan('db-hound:analyze')->assertSuccessful();
+
+    $report = Storage::disk('local')->get('db-hound/latest.md');
+
+    expect($report)
+        ->toContain('**Unparsed queries:** 0')
+        ->and(substr_count($report, '### '))->toBe(1)
+        ->and($report)->toContain('**Table:** `hound_order_items`')
+        ->toContain("**Proposed columns (in order):** `hound_order_id`, `kind`\n");
 });
 
 it('lists a query the SQL parser cannot parse as unparsed and still writes the Report', function () {

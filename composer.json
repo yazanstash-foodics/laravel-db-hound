@@ -17,6 +17,7 @@
     ],
     "require": {
         "php": "^8.4",
+        "ext-redis": "*",
         "illuminate/contracts": "^13.0",
         "phpmyadmin/sql-parser": "^6.0",
         "spatie/laravel-package-tools": "^1.16"

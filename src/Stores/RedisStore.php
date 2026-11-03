@@ -5,9 +5,7 @@ namespace Foodics\DbHound\Stores;
 use Closure;
 use Foodics\DbHound\Capture\QueryAggregate;
 use Foodics\DbHound\Contracts\Store;
-use Illuminate\Redis\Connections\Connection;
 use Illuminate\Redis\Connections\PhpRedisConnection;
-use Illuminate\Redis\Connections\PredisConnection;
 use Illuminate\Support\Carbon;
 use RuntimeException;
 use Throwable;
@@ -127,13 +125,13 @@ return {
 }
 LUA;
 
-    private ?Connection $connection = null;
+    private ?PhpRedisConnection $connection = null;
 
     /**
-     * @param  Connection|Closure(): Connection  $redis  a connection, or a resolver called on first use (so an unreachable Redis is only contacted when needed)
+     * @param  PhpRedisConnection|Closure(): PhpRedisConnection  $redis  a connection, or a resolver called on first use (so an unreachable Redis is only contacted when needed)
      */
     public function __construct(
-        private readonly Connection|Closure $redis,
+        private readonly PhpRedisConnection|Closure $redis,
         private readonly string $prefix = 'db-hound:',
     ) {}
 
@@ -204,22 +202,12 @@ LUA;
 
         $redis = $this->connection();
 
-        // One round trip per batch; the two clients spell EVAL differently.
-        if ($redis instanceof PhpRedisConnection) {
-            $redis->pipeline(function (\Redis $pipe) use ($writes) {
-                foreach ($writes as [$keys, $arguments]) {
-                    $pipe->eval(self::MERGE_SCRIPT, [...$keys, ...$arguments], count($keys));
-                }
-            });
-
-            return;
-        }
-
-        $redis->command('pipeline', [function ($pipe) use ($writes) {
+        // One round trip per batch.
+        $redis->pipeline(function (\Redis $pipe) use ($writes) {
             foreach ($writes as [$keys, $arguments]) {
-                $pipe->eval(self::MERGE_SCRIPT, count($keys), ...$keys, ...$arguments);
+                $pipe->eval(self::MERGE_SCRIPT, [...$keys, ...$arguments], count($keys));
             }
-        }]);
+        });
     }
 
     /**
@@ -364,32 +352,26 @@ LUA;
     }
 
     /**
-     * Run a Lua script; the two clients spell EVAL differently.
+     * Run a Lua script.
      *
      * @param  list<string>  $keys
      * @param  list<string|int>  $arguments
      */
     private function evaluate(string $script, array $keys, array $arguments = []): mixed
     {
-        $redis = $this->connection();
+        $client = $this->connection()->client();
+        $client->clearLastError();
+        $result = $client->eval($script, [...$keys, ...$arguments], count($keys));
 
-        if ($redis instanceof PhpRedisConnection) {
-            $client = $redis->client();
-            $client->clearLastError();
-            $result = $client->eval($script, [...$keys, ...$arguments], count($keys));
-
-            // phpredis reports a script error as false rather than throwing.
-            if ($result === false && $client->getLastError() !== null) {
-                throw new RuntimeException('db-hound Redis script failed: '.$client->getLastError());
-            }
-
-            return $result;
+        // phpredis reports a script error as false rather than throwing.
+        if ($result === false && $client->getLastError() !== null) {
+            throw new RuntimeException('db-hound Redis script failed: '.$client->getLastError());
         }
 
-        return $redis->command('eval', [$script, count($keys), ...$keys, ...$arguments]);
+        return $result;
     }
 
-    private function connection(): Connection
+    private function connection(): PhpRedisConnection
     {
         return $this->connection ??= $this->redis instanceof Closure ? ($this->redis)() : $this->redis;
     }
@@ -405,9 +387,7 @@ LUA;
         }
 
         try {
-            if ($this->connection instanceof PhpRedisConnection || $this->connection instanceof PredisConnection) {
-                $this->connection->disconnect();
-            }
+            $this->connection?->disconnect();
         } catch (Throwable) {
             // Already broken; nothing to close.
         }

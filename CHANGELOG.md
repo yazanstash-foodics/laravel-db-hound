@@ -21,7 +21,8 @@ The first release. db-hound captures production queries and suggests missing MyS
 - `db-hound:analyze` qualifies Fingerprints by count and latency, and runs a plain `EXPLAIN FORMAT=JSON` on the top 200 by impact. It runs on a mapped (replica) connection when one is configured, `SELECT`-only (writes are rewritten), in a read-only transaction with `max_execution_time`. It writes a Markdown Report (`report-{timestamp}.md` and `latest.md`) of ranked Suggestions:
   - composite indexes ordered equality → range → sort, with a note when a filesort or temporary table remains;
   - consolidation across Fingerprints (left-prefix containment), dedupe against existing indexes, and extend-existing-index proposals;
-  - full context for writing the migration: row count, existing indexes, column types, `EXPLAIN` summary, impact and the served Fingerprints;
+  - a header accounting for every analyzed Fingerprint by outcome (explained, or why not), and a warning naming any qualification threshold looser than its default;
+  - a one-screen summary table of every Suggestion, then one section per table (ordered by summed impact) giving its row count, existing indexes and column types once, followed by its Suggestions with their `EXPLAIN` summary, impact and served Fingerprints;
   - an "Unparsed queries" section, so nothing is silently dropped.
 - `db-hound:dump` writes a sensitive JSONL Dump with decrypted Samples, raw `EXPLAIN` output, schema context and impact stats. It is always `0600` with a `-SENSITIVE` suffix, local and non-public disks only, and prints a warning.
 
