@@ -1,0 +1,63 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "503.50"
+    },
+    "nested_loop": [
+      {
+        "table": {
+          "table_name": "orders",
+          "access_type": "const",
+          "possible_keys": [
+            "PRIMARY"
+          ],
+          "key": "PRIMARY",
+          "used_key_parts": [
+            "id"
+          ],
+          "key_length": "8",
+          "ref": [
+            "const"
+          ],
+          "rows_examined_per_scan": 1,
+          "rows_produced_per_join": 1,
+          "filtered": "100.00",
+          "cost_info": {
+            "read_cost": "0.00",
+            "eval_cost": "0.10",
+            "prefix_cost": "0.00",
+            "data_read_per_join": "112"
+          },
+          "used_columns": [
+            "id",
+            "merchant_id",
+            "status",
+            "created_at",
+            "deleted_at"
+          ]
+        }
+      },
+      {
+        "table": {
+          "table_name": "orders",
+          "access_type": "ALL",
+          "rows_examined_per_scan": 5000,
+          "rows_produced_per_join": 50,
+          "filtered": "1.00",
+          "cost_info": {
+            "read_cost": "498.50",
+            "eval_cost": "5.00",
+            "prefix_cost": "503.50",
+            "data_read_per_join": "5K"
+          },
+          "used_columns": [
+            "merchant_id",
+            "status"
+          ],
+          "attached_condition": "((`db_hound`.`orders`.`status` = 'a') and (`db_hound`.`orders`.`merchant_id` = '5'))"
+        }
+      }
+    ]
+  }
+}
