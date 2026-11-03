@@ -77,7 +77,8 @@ it('suggests nothing for a latestOfMany read when only the column a per-request 
     );
 
     expect($result->suggestions)->toBe([])
-        ->and(array_map(fn ($unparsed) => [$unparsed->sql, $unparsed->reason], $result->unparsed))->toBe([[
+        ->and($result->unparsed)->toBe([])
+        ->and(array_map(fn ($skipped) => [$skipped->sql, $skipped->reason], $result->skipped))->toBe([[
             LATEST_OF_MANY,
             'full scan on `personal_access_tokens`, but it has only columns written by frequent UPDATEs (`last_used_at`) '
             .'and columns the existing index `personal_access_tokens_tokenable_type_tokenable_id_index` already serves',
@@ -122,7 +123,7 @@ it('keeps the other columns of a Suggestion in order without the one frequent UP
     $note = 'leaves out `customer_id`: UPDATEs write it 50 times, at least as often as the queries served that need it run (10 times), '
         .'and an index on it would be maintained on each of those writes: `` '.REASSIGN_ORDER.' `` (50 times).';
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->notes], $result->suggestions))->toBe([[$columns, [$note]]])
         ->and((new ReportRenderer)->render(reportContext(), $result))->toContain("\n- **Note:** {$note}\n");
 })->with([
@@ -197,7 +198,8 @@ it('accounts for the Fingerprints of a Suggestion with nothing worth indexing le
     );
 
     expect($result->suggestions)->toBe([])
-        ->and(array_map(fn ($unparsed) => [$unparsed->sql, $unparsed->reason], $result->unparsed))->toBe([[$read, $reason]])
+        ->and($result->unparsed)->toBe([])
+        ->and(array_map(fn ($skipped) => [$skipped->sql, $skipped->reason], $result->skipped))->toBe([[$read, $reason]])
         ->and($result->accounting->of(FingerprintOutcome::Explained))->toBe(2);
 })->with([
     'only columns frequent UPDATEs write' => [
@@ -267,7 +269,7 @@ it('weighs a column UPDATEs write against every query the consolidated index wou
         millionOrders(['branch_id' => 1_000, 'customer_id' => 200_000]),
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->count, $suggestion->notes], $result->suggestions))->toBe($suggestions);
 })->with([
     // Each alone runs less often than the UPDATE writes `customer_id`; together, more often.
@@ -442,4 +444,20 @@ it('quotes at most the first characters of an UPDATE in the note', function () {
         'leaves out `customer_id`: UPDATEs write it 50 times, at least as often as the queries served that need it run (10 times), '
         .'and an index on it would be maintained on each of those writes: `` '.substr($bulk, 0, Suggestion::SQL_IN_NOTE).'… `` (50 times).',
     ]);
+});
+
+it('leaves a query with a column it cannot attribute unparsed when only columns frequent UPDATEs write are left to index (ticket 025)', function () {
+    $read = 'select * from `orders` where `customer_id` = ? and `archived_on` = ?';
+
+    $result = analyzeWrites(
+        [REASSIGN_ORDER => [50, 100.0], $read => [10, 1000.0]],
+        [$read => new Plan([new TableAccess('orders', 'ALL', null, 1_000_000)])],
+        millionOrders(['customer_id' => 200_000]),
+    );
+
+    expect($result->suggestions)->toBe([])
+        ->and(skippedReasons($result))->toBe([])
+        ->and(unparsedReasons($result))->toBe([
+            'full scan on `orders`, but it has only columns written by frequent UPDATEs (`customer_id`) (some columns of the query could not be attributed to a table)',
+        ]);
 });

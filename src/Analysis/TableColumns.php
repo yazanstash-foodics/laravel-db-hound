@@ -60,7 +60,15 @@ final class TableColumns
     /** 'GROUP BY' or 'ORDER BY' when $sort is set. */
     public ?string $sortClause = null;
 
-    /** Whether some predicate on this table could not be used for an index (OR, functions, `!=`, ...). */
+    /**
+     * Negated predicates (`!=`, `<>`, `NOT column = value`): they match
+     * nearly every row, so an index would barely narrow them.
+     *
+     * @var list<string>
+     */
+    public array $negated = [];
+
+    /** Whether some other predicate on this table is one db-hound does not read as an index's (an OR, a function of a column, a row constructor, an `IN` subquery, ...): an index may still serve it. */
     public bool $hasUnindexablePredicates = false;
 
     /**
@@ -101,6 +109,20 @@ final class TableColumns
     public function addNotNull(string $column): void
     {
         $this->notNulls[] = $column;
+    }
+
+    public function addNegated(string $column): void
+    {
+        $this->negated[] = $column;
+    }
+
+    /**
+     * Whether the query neither filters, joins nor sorts this reference on anything.
+     */
+    public function unfiltered(): bool
+    {
+        return $this->equalities === [] && $this->lists === [] && $this->ranges === [] && $this->nulls === []
+            && $this->notNulls === [] && $this->negated === [] && $this->sort === [] && ! $this->hasUnindexablePredicates;
     }
 
     /**

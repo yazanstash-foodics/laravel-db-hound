@@ -19,10 +19,12 @@ it('does not suggest an index on a soft-delete filter alone (staging #4)', funct
         ]],
     );
 
+    // A deliberate decision, not a failure to read the query.
     expect($result->suggestions)->toBe([])
-        ->and($result->unparsed)->toHaveCount(1)
-        ->and($result->unparsed[0]->sql)->toBe($sql)
-        ->and($result->unparsed[0]->reason)->toBe('full scan on `sama_finance`, but it has only low-selectivity predicates (`deleted_at`)');
+        ->and($result->unparsed)->toBe([])
+        ->and($result->skipped)->toHaveCount(1)
+        ->and($result->skipped[0]->sql)->toBe($sql)
+        ->and($result->skipped[0]->reason)->toBe('full scan on `sama_finance`, but it has only low-selectivity predicates (`deleted_at`)');
 });
 
 it('leads with the tenant column instead of the soft-delete filter (staging #11)', function () {
@@ -53,7 +55,7 @@ it('leads with the tenant column instead of the soft-delete filter (staging #11)
         ],
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->table, $suggestion->columns], $result->suggestions))
         ->toBe([['transactions', ['merchant_id', 'deleted_at', 'transaction_date']]]);
 });
@@ -80,7 +82,7 @@ it('puts boolean filters after the selective equality column (staging #18)', fun
         ]],
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->columns)->toBe(['merchant_id', 'is_active', 'is_approved', 'created_at'])
         ->and($result->suggestions[0]->extends?->name)->toBe('branches_merchant_id_index');
@@ -109,7 +111,7 @@ it('does not suggest an index on an IS NOT NULL filter alone (staging #1)', func
     );
 
     expect($result->suggestions)->toBe([])
-        ->and(array_map(fn ($unparsed) => $unparsed->reason, $result->unparsed))
+        ->and(skippedReasons($result))
         ->toContain('full scan on `bank_statements_summary`, but it has only low-selectivity predicates (`merchant_id`)');
 });
 
@@ -146,7 +148,7 @@ it('puts weak filters after the selective equality columns', function (string $s
         millionOrders(['branch_id' => 400, 'status' => 5]),
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->columns)->toBe($columns);
 })->with([
@@ -182,7 +184,7 @@ it('leaves out weak filters no selective column precedes, so they never lead the
         millionOrders(),
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->columns)->toBe($columns)
         ->and($result->suggestions[0]->notes)->toBe([]);
@@ -202,7 +204,7 @@ it('treats a multi-value IN list on a selective column as a seek column the weak
         millionOrders(['customer_id' => 90_000]),
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->columns)->toBe($columns)
         ->and($result->suggestions[0]->notes)->toBe($notes);
@@ -221,15 +223,15 @@ it('treats a multi-value IN list on a selective column as a seek column the weak
     ],
 ]);
 
-it('lists a query with only low-selectivity predicates as unparsed', function (string $sql, string $columns) {
+it('lists a query with only low-selectivity predicates as skipped', function (string $sql, string $columns) {
     $result = analyzeWithCardinality(
         [$sql => new Plan([new TableAccess('orders', 'ALL', null, 1_000_000)])],
         millionOrders(['status' => 5]),
     );
 
     expect($result->suggestions)->toBe([])
-        ->and($result->unparsed)->toHaveCount(1)
-        ->and($result->unparsed[0]->reason)->toBe("full scan on `orders`, but it has only low-selectivity predicates ({$columns})");
+        ->and($result->unparsed)->toBe([])
+        ->and(skippedReasons($result))->toBe(["full scan on `orders`, but it has only low-selectivity predicates ({$columns})"]);
 })->with([
     'weak equalities' => [
         'select * from `orders` where `is_paid` = ? and `kind` = ? and `status` = ? and `deleted_at` is null',
@@ -256,7 +258,7 @@ it('extends an existing index that holds the equality columns in another order t
         $tables,
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->columns)->toBe(['status', 'branch_id', 'created_at'])
         ->and($result->suggestions[0]->extends?->name)->toBe('orders_status_branch_id_index');
@@ -275,7 +277,7 @@ it('keeps a tenant column selective however large its table grows', function (in
         ]],
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->columns)->toBe(['merchant_id', 'deleted_at']);
 })->with([
@@ -295,10 +297,10 @@ it('reads the share of rows above which an equality is weak from the configurati
     config()->set('db-hound.analysis.low_selectivity_share', 0.01);
     $lowered = analyzeWithCardinality($plans, $tables, app(Analyzer::class));
 
-    expect($default->unparsed)->toBe([])
+    expect(unsuggested($default))->toBe([])
         ->and($default->suggestions[0]->columns)->toBe(['status'])
         ->and($lowered->suggestions)->toBe([])
-        ->and($lowered->unparsed[0]->reason)->toBe('full scan on `orders`, but it has only low-selectivity predicates (`status`)');
+        ->and($lowered->skipped[0]->reason)->toBe('full scan on `orders`, but it has only low-selectivity predicates (`status`)');
 });
 
 it('looks up each table\'s metadata once per run, however many Fingerprints read it', function () {

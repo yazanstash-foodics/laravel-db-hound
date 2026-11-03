@@ -332,7 +332,39 @@ final class ColumnExtractor
             return;
         }
 
+        if ($this->negation($tokens, $chain)) {
+            return;
+        }
+
         $this->unindexable($tokens, $chain);
+    }
+
+    /**
+     * `column != value`, `column <> value` or `NOT column = value`.
+     *
+     * @param  list<array{kind: string, value: string, at: int}>  $tokens
+     * @param  list<array<string, ?TableColumns>>  $chain
+     */
+    private function negation(array $tokens, array $chain): bool
+    {
+        $not = ($tokens[0]['kind'] ?? null) === 'keyword' && $tokens[0]['value'] === 'NOT';
+        $column = $this->columnAt($tokens, $not ? 1 : 0);
+
+        if ($column === null) {
+            return false;
+        }
+
+        $operator = $tokens[$column['next']] ?? null;
+
+        if ($operator === null || $operator['kind'] !== 'operator' || ! in_array($operator['value'], $not ? self::EQUALITY : ['!=', '<>'], true)
+            || ! $this->constant(array_slice($tokens, $column['next'] + 1))) {
+            return false;
+        }
+
+        $reference = $this->resolve($column['qualifier'], $column['column'], $chain);
+        $reference?->addNegated($this->spelled($reference, $column['column']));
+
+        return true;
     }
 
     /**

@@ -17,6 +17,7 @@ final readonly class TableDemand
      * @param  list<Index>  $indexes  the table's
      * @param  array<string, string>  $columnTypes  the table's, column => type
      * @param  list<string>  $required  columns the index must have even when they are weak filters: those the plan checks row by row past the part of its index it seeks on
+     * @param  bool  $unresolvedColumns  whether some column of the query could not be attributed to a table
      */
     public function __construct(
         public QueryAggregate $query,
@@ -32,6 +33,7 @@ final readonly class TableDemand
         public int $rowCount,
         public array $columnTypes,
         public array $required = [],
+        public bool $unresolvedColumns = false,
     ) {}
 
     /**

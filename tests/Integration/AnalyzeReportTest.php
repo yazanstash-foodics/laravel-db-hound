@@ -185,8 +185,10 @@ it('reports a Fingerprint whose EXPLAIN fails without leaking its binding values
         ->doesntExpectOutputToContain('secret-binding-value')
         ->assertSuccessful();
 
+    // A failure to read the query, not a decision: listed as unparsed, never as skipped.
     expect(Storage::disk('local')->get('db-hound/latest.md'))
-        ->toContain('**Unparsed queries:** 1')
+        ->toContain("- **Skipped queries:** 0\n- **Unparsed queries:** 1\n")
+        ->toContain("## Skipped queries\n\nNone.\n\n## Unparsed queries\n\n- **mysql** — ")
         ->toContain('42S02')
         ->not->toContain('secret-binding-value');
 });

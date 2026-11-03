@@ -7,12 +7,13 @@ use Foodics\DbHound\Analysis\Index;
 use Foodics\DbHound\Analysis\Plan;
 use Foodics\DbHound\Analysis\Suggestion;
 use Foodics\DbHound\Analysis\TableAccess;
-use Foodics\DbHound\Analysis\UnparsedQuery;
+use Foodics\DbHound\Analysis\UnsuggestedBecause;
+use Foodics\DbHound\Analysis\UnsuggestedQuery;
 use Foodics\DbHound\Report\ReportContext;
 use Foodics\DbHound\Report\ReportRenderer;
 use Illuminate\Support\Carbon;
 
-it('renders the header, the summary, each table with its context and Suggestions, and the unparsed section', function () {
+it('renders the header, the summary, each table with its context and Suggestions, and the skipped and unparsed sections', function () {
     $suggestion = new Suggestion(
         connection: 'mysql',
         table: 'orders',
@@ -32,7 +33,11 @@ it('renders the header, the summary, each table with its context and Suggestions
 
     $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult(
         [$suggestion],
-        [new UnparsedQuery('mysql', 'select * from `orders` where `status` = ? or `total` > ?', 'full scan, but predicate columns could not be extracted')],
+        [
+            new UnsuggestedQuery('mysql', 'select * from `orders` where `archived_on` = ?', 'full scan on `orders`, but the SQL parser failed on it (TypeError)', UnsuggestedBecause::ParserFailed),
+            new UnsuggestedQuery('mysql', 'select count(*) from `orders` where `deleted_at` is null', 'full scan on `orders`, but it has only low-selectivity predicates (`deleted_at`)', UnsuggestedBecause::OnlyLowSelectivity),
+            new UnsuggestedQuery('mysql', 'select * from `orders` where `status` != ?', 'full scan on `orders`, but it has only negated predicates (`status`)', UnsuggestedBecause::OnlyNegations),
+        ],
         FingerprintAccounting::tally([FingerprintOutcome::Explained, FingerprintOutcome::Explained, FingerprintOutcome::Explained, FingerprintOutcome::BelowThresholds]),
     ));
 
@@ -47,6 +52,7 @@ it('renders the header, the summary, each table with its context and Suggestions
 - **Fingerprint accounting:** 3 explained + 1 below count/latency thresholds = 4 analyzed
 - **Thresholds:** none
 - **Suggestions:** 1
+- **Skipped queries:** 2
 - **Unparsed queries:** 1
 
 ## Summary
@@ -100,12 +106,25 @@ select * from `orders` where `status` = ?
 select `id` from `orders` where `status` = ? limit 10
 ```
 
-## Unparsed queries
+## Skipped queries
 
-- **mysql** — full scan, but predicate columns could not be extracted
+- **mysql** — full scan on `orders`, but it has only low-selectivity predicates (`deleted_at`)
 
   ```sql
-  select * from `orders` where `status` = ? or `total` > ?
+  select count(*) from `orders` where `deleted_at` is null
+  ```
+- **mysql** — full scan on `orders`, but it has only negated predicates (`status`)
+
+  ```sql
+  select * from `orders` where `status` != ?
+  ```
+
+## Unparsed queries
+
+- **mysql** — full scan on `orders`, but the SQL parser failed on it (TypeError)
+
+  ```sql
+  select * from `orders` where `archived_on` = ?
   ```
 
 MD);
@@ -116,7 +135,8 @@ it('says so when there is nothing to suggest', function () {
 
     expect($markdown)
         ->toContain("## Summary\n\nNo Suggestions.\n")
-        ->toContain("## Unparsed queries\n\nNone.\n");
+        ->toContain("- **Skipped queries:** 0\n- **Unparsed queries:** 0\n")
+        ->toContain("## Skipped queries\n\nNone.\n\n## Unparsed queries\n\nNone.\n");
 });
 
 it('lists every Fingerprint a Suggestion serves', function () {
@@ -371,6 +391,7 @@ MD)
             '## Summary',
             '## `orders` (mysql)',
             '## `orders` (reporting)',
+            '## Skipped queries',
             '## Unparsed queries',
         ]);
 });

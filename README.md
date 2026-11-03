@@ -264,6 +264,7 @@ The Report is Markdown with a fixed structure. It contains only normalized SQL (
   - Fingerprint count: ≥ 10
   - …
 - **Suggestions:** 3
+- **Skipped queries:** 2
 - **Unparsed queries:** 1
 ```
 
@@ -277,6 +278,7 @@ The Report is Markdown with a fixed structure. It contains only normalized SQL (
 | **Fingerprint accounting** | What became of every analyzed Fingerprint, one outcome each, summed to **Fingerprints analyzed**; outcomes no Fingerprint had are left out. `explained`: `EXPLAIN` ran and its plan was looked at for Suggestions. `skipped by row threshold`: `EXPLAIN` ran, but every table it flagged is under the Table rows threshold. `EXPLAIN failed`: listed under "Unparsed queries". `no Sample available`: the Fingerprint can be explained only with a Sample and has none (also listed under "Unparsed queries"). `skipped by the explain cap`: qualified, but past the Fingerprints explained cap. `below count/latency thresholds`, `skipped by ignore lists` (ignored tables, statements or schemas), `not a SELECT, UPDATE or DELETE`: never explained. `other`: looking up its tables (their columns, indexes or row counts) failed, before or after `EXPLAIN` (listed under "Unparsed queries"). |
 | **Thresholds** | The qualification settings used: Fingerprint count, Fingerprint latency, Fingerprints explained, Table rows, Ignored tables, Ignored statements, Ignored schemas. |
 | **Suggestions** | Number of Suggestions below. |
+| **Skipped queries** | Number of entries in the "Skipped queries" section. |
 | **Unparsed queries** | Number of entries in the "Unparsed queries" section. |
 
 When any qualification threshold (Fingerprint count, average or max latency, Table rows) is looser than the package default, a warning opens the Report, above the header, naming each relaxed threshold next to its default:
@@ -400,19 +402,45 @@ Suggestions are already **consolidated** and **deduplicated**:
 - A Suggestion an existing index already serves, by the same rule, is dropped. An existing index counts with the primary key InnoDB appends to it: `(a, b)` serves a query that needs `(a, b, id)`, but `(a, c)` does not serve one that needs `(a, id)`.
 - When an existing non-unique B-tree index is a strict left prefix of the proposed columns (equality columns in any order), the Suggestion extends it rather than adding another index. When several are, it extends the one EXPLAIN reports as the `key` of a served Fingerprint's plan (the most impactful one first), since replacing that index is what changes the plan, reordering its equality columns to start with it; else the longest one, and of equally long ones the one whose first column is the most selective.
 
-### Unparsed queries
+### Skipped and unparsed queries
 
-The Report ends with `## Unparsed queries` (`None.` when it is empty). It lists Fingerprints that need attention but got no Suggestion, so nothing is silently dropped:
+The Report ends with two sections listing Fingerprints that need attention but got no Suggestion, so nothing is silently dropped: `## Skipped queries`, then `## Unparsed queries` (each `None.` when it is empty). Each entry has the connection, a reason and the normalized SQL:
 
 ````markdown
-- **mysql** — full scan on `orders`, but no indexable predicate columns were found
+## Skipped queries
+
+- **mysql** — full scan on `orders`, but it has only negated predicates (`status`)
 
   ```sql
-  select * from `orders` where `status` = ? or `total` > ?
+  select * from `orders` where `status` != ?
+  ```
+
+## Unparsed queries
+
+- **mysql** — EXPLAIN failed (QueryException, SQLSTATE 42S02)
+
+  ```sql
+  select * from `orders_archive` where `customer_id` = ?
   ```
 ````
 
-Each entry has the connection, a reason (for example the SQL parser could not handle the query, `EXPLAIN` failed with an SQLSTATE, the query reads another database, the table is filtered only on low-selectivity predicates such as `deleted_at IS NULL` that an index would barely narrow, the index would have only columns written by frequent UPDATEs besides such predicates or columns an existing index already serves, or `cannot EXPLAIN without a Sample`), and the normalized SQL. A Fingerprint appears at most once per reason, however many of its table accesses show it (a self-join whose table references share a name, for example). A full scan of a derived table (a subquery in `FROM`, such as Laravel's `laravel_table` or `latestOfMany`) is never listed: db-hound analyzes the tables its query reads instead, and the tables of subqueries in the `SELECT` list (`withCount`, `withSum`), in `WHERE` (a `whereHas` `EXISTS`, even inside an `OR`) or `HAVING` and those MySQL evaluates once (`select exists(…)`). A table filtered only on low-selectivity predicates is listed only when no Suggestion serves the query: the `merchants` around a `whereHas` on `adjustments`, filtered on `deleted_at IS NULL` alone, is not listed when `adjustments` gets an index. Errors are reported by class and SQLSTATE only, because database error messages can contain binding values.
+**Skipped queries** are queries db-hound read and decided no index helps:
+
+- the table is filtered only on low-selectivity predicates, such as `deleted_at IS NULL` or a boolean, that an index would barely narrow (`it has only low-selectivity predicates`);
+- the index would have only columns written by frequent UPDATEs, besides such predicates or columns an existing index already serves (`it has only columns written by frequent UPDATEs`);
+- the table is filtered only on negations, `!=`, `<>` or `NOT column = value`, which match nearly every row, so an index would barely narrow them (`it has only negated predicates`);
+- the query has no predicate on the table at all, so whatever reads it reads every row (`the query has no predicate on it`).
+
+**Unparsed queries** are queries db-hound could not read, so a missing index may hide behind them:
+
+- the SQL parser could not handle the query;
+- `EXPLAIN` failed, with its SQLSTATE, or the Fingerprint `cannot EXPLAIN without a Sample`;
+- looking up its tables (columns, indexes or row counts) failed;
+- the plan's table matches no table reference of the query, or several (a self-join without distinct aliases), or the query reads another database than the connection's default one, the only one db-hound inspects;
+- its predicates on the table are ones db-hound does not read as an index's, though an index may serve them: an `OR` (MySQL can merge indexes on its branches), a function of a column (a functional index serves it), a row constructor such as `(a, b) IN ((?, ?), …)`, an `IN (subquery)` (`no indexable predicate columns were found`);
+- some columns of the query could not be attributed to a table (a reason ending with `(some columns of the query could not be attributed to a table)`), whatever else the table is filtered on: the column it cannot place may be the one an index needs.
+
+A Fingerprint appears at most once per reason, however many of its table accesses show it (a self-join whose table references share a name, for example). A full scan of a derived table (a subquery in `FROM`, such as Laravel's `laravel_table` or `latestOfMany`) is never listed: db-hound analyzes the tables its query reads instead, and the tables of subqueries in the `SELECT` list (`withCount`, `withSum`), in `WHERE` (a `whereHas` `EXISTS`, even inside an `OR`) or `HAVING` and those MySQL evaluates once (`select exists(…)`). A table filtered only on low-selectivity predicates, or on none, is listed only when no Suggestion serves the query: the `merchants` around a `whereHas` on `adjustments`, filtered on `deleted_at IS NULL` alone, is not listed when `adjustments` gets an index. Every skipped or unparsed Fingerprint is still counted once in the **Fingerprint accounting** (a skipped one was explained). Errors are reported by class and SQLSTATE only, because database error messages can contain binding values.
 
 ## Dump format
 

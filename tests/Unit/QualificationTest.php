@@ -137,7 +137,7 @@ it('does not explain a Fingerprint that touches an ignored table', function (str
 
     expect($driver->explained)->toBe([])
         ->and($result->suggestions)->toBe([])
-        ->and($result->unparsed)->toBe([]);
+        ->and(unsuggested($result))->toBe([]);
 })->with([
     'migrations' => 'select * from `migrations` where `status` = ?',
     'jobs' => 'select * from `jobs` where `status` = ? limit 1 for update skip locked',
@@ -172,7 +172,7 @@ it('does not explain information_schema, SHOW or SET statements', function (stri
 
     expect($driver->explained)->toBe([])
         ->and($result->suggestions)->toBe([])
-        ->and($result->unparsed)->toBe([]);
+        ->and(unsuggested($result))->toBe([]);
 })->with([
     'information_schema' => 'select * from information_schema.tables where table_schema = ? and table_name = ?',
     'quoted information_schema' => 'select `column_name` from `INFORMATION_SCHEMA`.`COLUMNS` where `table_name` = ?',
@@ -255,7 +255,7 @@ it('suggests nothing on a table under the row threshold, even for a full scan', 
 
     expect($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->table)->toBe('orders')
-        ->and($result->unparsed)->toBe([]);
+        ->and(unsuggested($result))->toBe([]);
 });
 
 it('does not list a full scan of a small table without indexable predicates as unparsed', function () {
@@ -265,7 +265,7 @@ it('does not list a full scan of a small table without indexable predicates as u
     );
 
     expect($result->suggestions)->toBe([])
-        ->and($result->unparsed)->toBe([]);
+        ->and(unsuggested($result))->toBe([]);
 });
 
 it('does not list a full scan of a small table several references name as unparsed', function () {
@@ -275,7 +275,7 @@ it('does not list a full scan of a small table several references name as unpars
     );
 
     expect($result->suggestions)->toBe([])
-        ->and($result->unparsed)->toBe([]);
+        ->and(unsuggested($result))->toBe([]);
 });
 
 it('still lists a full scan of a big table several references name as unparsed', function () {

@@ -5,6 +5,7 @@ use Foodics\DbHound\Analysis\Analyzer;
 use Foodics\DbHound\Analysis\Index;
 use Foodics\DbHound\Analysis\Plan;
 use Foodics\DbHound\Analysis\Qualification;
+use Foodics\DbHound\Analysis\UnsuggestedQuery;
 use Foodics\DbHound\Capture\QueryAggregate;
 use Foodics\DbHound\Capture\Recorder;
 use Foodics\DbHound\Contracts\Driver;
@@ -285,4 +286,22 @@ function suggestedIndexes(AnalysisResult $result): array
 function unparsedReasons(AnalysisResult $result): array
 {
     return array_map(fn ($unparsed) => $unparsed->reason, $result->unparsed);
+}
+
+/**
+ * @return list<string>
+ */
+function skippedReasons(AnalysisResult $result): array
+{
+    return array_map(fn ($skipped) => $skipped->reason, $result->skipped);
+}
+
+/**
+ * Every flagged Fingerprint that got no Suggestion, skipped or unparsed.
+ *
+ * @return list<UnsuggestedQuery>
+ */
+function unsuggested(AnalysisResult $result): array
+{
+    return [...$result->skipped, ...$result->unparsed];
 }

@@ -7,6 +7,7 @@ use Foodics\DbHound\Analysis\AnalysisResult;
 use Foodics\DbHound\Analysis\FingerprintAccounting;
 use Foodics\DbHound\Analysis\Index;
 use Foodics\DbHound\Analysis\Suggestion;
+use Foodics\DbHound\Analysis\UnsuggestedQuery;
 
 /**
  * Renders Suggestions and run context as Markdown with a fixed structure.
@@ -33,13 +34,29 @@ final class ReportRenderer
             array_push($lines, ...$this->table($suggestions, $connections));
         }
 
-        array_push($lines, '## Unparsed queries', '');
+        array_push($lines, ...$this->unsuggested('Skipped queries', $result->skipped));
+        $lines[] = '';
+        array_push($lines, ...$this->unsuggested('Unparsed queries', $result->unparsed));
 
-        if ($result->unparsed === []) {
+        return implode("\n", $lines)."\n";
+    }
+
+    /**
+     * A section of flagged Fingerprints that got no Suggestion, each with
+     * its connection, why, and its normalized SQL; `None.` when empty.
+     *
+     * @param  list<UnsuggestedQuery>  $queries
+     * @return list<string>
+     */
+    private function unsuggested(string $heading, array $queries): array
+    {
+        $lines = ["## {$heading}", ''];
+
+        if ($queries === []) {
             $lines[] = 'None.';
         }
 
-        foreach ($result->unparsed as $query) {
+        foreach ($queries as $query) {
             $lines[] = "- **{$query->connection}** — {$query->reason}";
             $lines[] = '';
             $lines[] = '  ```sql';
@@ -47,7 +64,7 @@ final class ReportRenderer
             $lines[] = '  ```';
         }
 
-        return implode("\n", $lines)."\n";
+        return $lines;
     }
 
     /**
@@ -103,6 +120,7 @@ final class ReportRenderer
             '- **Fingerprint accounting:** '.$this->accounting($result->accounting),
             ...$thresholds,
             '- **Suggestions:** '.count($result->suggestions),
+            '- **Skipped queries:** '.count($result->skipped),
             '- **Unparsed queries:** '.count($result->unparsed),
         ];
     }

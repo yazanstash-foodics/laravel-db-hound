@@ -5,7 +5,8 @@ use Foodics\DbHound\Analysis\Index;
 use Foodics\DbHound\Analysis\Plan;
 use Foodics\DbHound\Analysis\Suggestion;
 use Foodics\DbHound\Analysis\TableAccess;
-use Foodics\DbHound\Analysis\UnparsedQuery;
+use Foodics\DbHound\Analysis\UnsuggestedBecause;
+use Foodics\DbHound\Analysis\UnsuggestedQuery;
 use Foodics\DbHound\Report\ReportContext;
 use Foodics\DbHound\Report\ReportRenderer;
 use Illuminate\Support\Carbon;
@@ -188,7 +189,10 @@ it('documents every field of the Report', function () {
         queries: 1250,
         thresholds: everyFingerprint()->describe(),
         relaxed: everyFingerprint()->relaxed(),
-    ), new AnalysisResult([$suggestion], [new UnparsedQuery('mysql', 'select 1', 'unparseable')]));
+    ), new AnalysisResult([$suggestion], [
+        new UnsuggestedQuery('mysql', 'select count(*) from `orders` where `deleted_at` is null', 'only low-selectivity predicates', UnsuggestedBecause::OnlyLowSelectivity),
+        new UnsuggestedQuery('mysql', 'select 1', 'unparseable', UnsuggestedBecause::ParserFailed),
+    ]));
 
     preg_match_all('/^#{2,3} ([A-Z][a-z][^\n]*)$/m', $markdown, $sections);
     preg_match_all('/^- \*\*([^*]+):\*\*/m', $markdown, $fields);
@@ -210,7 +214,8 @@ it('documents every field of the Report', function () {
     ], fn (string $text) => ! str_contains($documentation, $text)));
 
     expect($fields[1])->toContain('Generated at', 'Kind', 'Note', 'Total impact')
-        ->and($sections[1])->toContain('Summary', 'Unparsed queries')
+        ->and($sections[1])->toContain('Summary', 'Skipped queries', 'Unparsed queries')
+        ->and($fields[1])->toContain('Skipped queries', 'Unparsed queries')
         ->and($summaryColumns)->toContain('Rank', 'Kind', 'Fingerprints served')
         ->and($blocks[1])->toContain('EXPLAIN summary', 'Existing indexes on', 'Served Fingerprints')
         ->and($thresholds[1])->toContain('Fingerprint count')

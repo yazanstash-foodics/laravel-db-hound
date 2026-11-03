@@ -71,7 +71,7 @@ it('folds a second index on the same key-like leading column into the one with m
 
     $suggestions = array_values(array_filter($result->suggestions, fn ($suggestion) => $suggestion->table === 'pending_review_records'));
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->fingerprints], $suggestions))
         ->toBe([[['pendable_id', 'pendable_type', 'deleted_at'], [PENDABLE_LOOKUP, PENDABLE_COUNT]]])
         ->and($suggestions[0]->impact())->toEqualWithDelta(116.04, 0.001)
@@ -106,7 +106,7 @@ function foldedIndexes(array $plans, array $tables, array $stats): array
 {
     $result = analyzeWithCardinality($plans, $tables, stats: $stats);
 
-    expect($result->unparsed)->toBe([]);
+    expect(unsuggested($result))->toBe([]);
 
     return array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->fingerprints], $result->suggestions);
 }
@@ -189,7 +189,7 @@ it('suggests one index extending the `source` index for the two integration log 
     );
 
     // Folded into the windowed listing's index, the latest one would sort its rows: the windowed one is folded into its index instead.
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->extends?->name, $suggestion->fingerprints], $result->suggestions))
         ->toBe([[['source', 'type', 'created_at'], 'integration_logs_source_index', [$windowed, $latest]]])
         ->and($result->suggestions[0]->notes)->toBe([
@@ -233,7 +233,7 @@ it('keeps the folded query\'s sort right after the columns it pins, rather than 
     );
 
     // Extending the existing index would put its second column between `customer_id` and the sort column.
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->extends?->name, $suggestion->fingerprints], $result->suggestions))
         ->toBe([[$columns, null, [$kept, $folded]]]);
 })->with([
@@ -265,7 +265,7 @@ it('does not fold the Suggestion with more impact into one that leads with anoth
     );
 
     // `status` finds 20,000 orders, so the reference lookup is not folded into the first; nor the first into the second's index.
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->fingerprints], $result->suggestions))
         ->toBe([[['status', 'reference'], [$byStatus]], [['reference', 'total'], [$byReference]]]);
 });

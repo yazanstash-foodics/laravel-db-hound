@@ -94,14 +94,14 @@ it('analyzes the tables inside the derived tables of a latestOfMany query, never
 
     // The inner query seeks on the morph columns; the one around it then
     // joins the latest `last_used_at` of each back to its token.
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(suggestedIndexes($result))->toBe([['personal_access_tokens', ['tokenable_id', 'tokenable_type', 'last_used_at']]]);
 });
 
 it('analyzes the inner query of a window-function eager load (laravel_table)', function (string $sql, string $plan, array $shapes, array $expected) {
     $result = analyzeWithCardinality([$sql => stagingPlan($plan)], $shapes);
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(suggestedIndexes($result))->toBe([$expected]);
 })->with([
     'orders' => [WINDOW_ORDERS, 'window-orders', stagingShapes(), ['orders', ['merchant_id', 'status', 'deleted_at']]],
@@ -120,7 +120,7 @@ it('suggests an index on the table of a correlated subquery in the SELECT list (
     // In table order: the columns of each, in index order.
     usort($suggested, fn (array $a, array $b) => $a[0] <=> $b[0]);
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and($suggested)->toBe($expected);
 })->with([
     'withCount on a morph relation' => [SELECT_LIST_COUNTS, 'select-list-counts', [['pending_review_records', ['pendable_id', 'pendable_type', 'deleted_at']]]],
@@ -131,7 +131,7 @@ it('suggests an index on the table of a correlated subquery in the SELECT list (
     ]],
 ]);
 
-it('leaves at most 3 of the 11 staging unparsed entries unparsed', function () {
+it('leaves none of the 11 unparsed entries of the v1 staging Report unparsed, skipping what no index serves (ticket 025)', function () {
     $result = analyzeWithCardinality(
         [
             SELECT_LIST_COUNTS => stagingPlan('select-list-counts'),
@@ -146,20 +146,21 @@ it('leaves at most 3 of the 11 staging unparsed entries unparsed', function () {
         stagingShapes(),
     );
 
-    // What remains is what no index serves: a `!=` and an IS NOT NULL alone.
-    expect(unparsedReasons($result))->toEqualCanonicalizing([
-        'full scan on `mt942_statement`, but no indexable predicate columns were found',
-        'full scan on `bank_statements_summary`, but it has only low-selectivity predicates (`merchant_id`)',
-    ])->and(suggestedIndexes($result))->toEqualCanonicalizing([
-        // One index serves both review-record subqueries through the key-like `pendable_id` (ticket 024).
-        ['pending_review_records', ['pendable_id', 'pendable_type', 'deleted_at']],
-        ['personal_access_tokens', ['tokenable_id', 'tokenable_type', 'last_used_at']],
-        ['daily_card_insights', ['merchant_id', 'day']],
-        ['orders', ['merchant_id', 'status', 'deleted_at']],
-        // Partial index use: the plans seek on the first column only and check the second on the rows.
-        ['merchant_users', ['merchant_id', 'is_contact_user']],
-        ['transaction_charges', ['transaction_id', 'type']],
-    ]);
+    // What remains is what no index serves, a `NOT =` and an IS NOT NULL alone: deliberate skips, not failures to read the query.
+    expect($result->unparsed)->toBe([])
+        ->and(skippedReasons($result))->toEqualCanonicalizing([
+            'full scan on `mt942_statement`, but it has only negated predicates (`statement_date`)',
+            'full scan on `bank_statements_summary`, but it has only low-selectivity predicates (`merchant_id`)',
+        ])->and(suggestedIndexes($result))->toEqualCanonicalizing([
+            // One index serves both review-record subqueries through the key-like `pendable_id` (ticket 024).
+            ['pending_review_records', ['pendable_id', 'pendable_type', 'deleted_at']],
+            ['personal_access_tokens', ['tokenable_id', 'tokenable_type', 'last_used_at']],
+            ['daily_card_insights', ['merchant_id', 'day']],
+            ['orders', ['merchant_id', 'status', 'deleted_at']],
+            // Partial index use: the plans seek on the first column only and check the second on the rows.
+            ['merchant_users', ['merchant_id', 'is_contact_user']],
+            ['transaction_charges', ['transaction_id', 'type']],
+        ]);
 });
 
 it('never lists a full scan of a derived table, whether EXPLAIN or only the query says it is one', function () {
@@ -171,7 +172,7 @@ it('never lists a full scan of a derived table, whether EXPLAIN or only the quer
 
     $result = analyzeWithCardinality([DERIVED_TEMP_TABLE => $plan], stagingShapes());
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(suggestedIndexes($result))->toBe([['daily_card_insights', ['merchant_id', 'day']]]);
 });
 
@@ -190,7 +191,7 @@ it('analyzes a query with a CASE expression in its SELECT list', function (strin
         millionOrders(['reference' => 1_000_000]),
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(suggestedIndexes($result))->toBe([['orders', ['reference']]]);
 })->with([
     'searched CASE' => ['select `orders`.`id`, case when `status` = ? then ? else ? end as `label` from `orders` where `orders`.`reference` = ?'],

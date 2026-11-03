@@ -54,7 +54,7 @@ it('extends the index a ref reads by the IN predicate it leaves to the rows (sta
 
     $result = analyzeWithCardinality([$sql => partialIndexPlan('payments-status-in')], partialPayments());
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(partialSuggestions($result))->toBe([
             [['merchant_id', 'status'], 'payments_merchant_id_index', [Analyzer::REASON_PARTIAL_INDEX_USE]],
         ]);
@@ -68,7 +68,7 @@ it('suggests the equality and range columns when a key gap stops the access at t
         'cardinality' => ['merchant_id' => 20],
     ]]);
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(partialSuggestions($result))->toBe([
             [['merchant_id', 'day'], null, [Analyzer::REASON_PARTIAL_INDEX_USE]],
         ])
@@ -126,7 +126,7 @@ it('seeks on the range a key gap blocks rather than on an earlier range in the q
     $alone = analyzeWithCardinality([$joined => partialIndexPlan('key-gap-joined')], partialCardInsights());
     $both = analyzeWithCardinality([$joined => partialIndexPlan('key-gap-joined'), $ranged => partialIndexPlan('key-gap-range')], partialCardInsights());
 
-    expect($alone->unparsed)->toBe([])
+    expect(unsuggested($alone))->toBe([])
         ->and(partialSuggestions($alone))->toBe([
             [['merchant_id', 'day'], null, [Analyzer::REASON_PARTIAL_INDEX_USE]],
         ])
@@ -147,7 +147,7 @@ it('keeps a weak IS NULL the plan checks on the rows after the selective column 
         'cardinality' => ['id' => 20_000, 'notifiable_id' => 300],
     ]]);
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(partialSuggestions($result))->toBe([
             [['notifiable_id', 'read_at'], 'notifications_notifiable_id_index', [Analyzer::REASON_PARTIAL_INDEX_USE]],
         ]);
@@ -165,7 +165,7 @@ it('suggests nothing when the access seeks on every predicate', function (string
     ]]);
 
     expect($result->suggestions)->toBe([])
-        ->and($result->unparsed)->toBe([]);
+        ->and(unsuggested($result))->toBe([]);
 })->with([
     'equalities, no condition on the rows' => ['select * from `settlements` where `merchant_id` = ? and `status` = ?', 'all-key-parts'],
     // The range shows up as an index condition the access checks, though it seeks on it.
@@ -185,7 +185,7 @@ it('does not add a weak filter to an index the access seeks on in full', functio
 
     // The weak filter would come between the columns it seeks on: a second index on `merchant_id` that barely narrows the read.
     expect($result->suggestions)->toBe([])
-        ->and($result->unparsed)->toBe([]);
+        ->and(unsuggested($result))->toBe([]);
 })->with([
     'a soft delete' => ['select * from `sales` where `merchant_id` = ? and `created_at` between ? and ? and `sales`.`deleted_at` is null', 'sales-soft-deleted'],
     'a boolean' => ['select * from `sales` where `merchant_id` = ? and `created_at` > ? and `is_void` = ? order by `created_at` asc limit 10', 'sales-not-void'],
@@ -195,7 +195,7 @@ it('suggests nothing when the rows are checked only on a predicate no index seek
     $result = analyzeWithCardinality([$sql => partialIndexPlan($plan)], partialPayments());
 
     expect($result->suggestions)->toBe([])
-        ->and($result->unparsed)->toBe([]);
+        ->and(unsuggested($result))->toBe([]);
 })->with([
     'a function of a column' => ['select * from `payments` where `merchant_id` = ? and lower(`status`) = ?', 'payments-function'],
     'an OR across columns' => ['select * from `payments` where `merchant_id` = ? and (`status` = ? or `note` = ?)', 'payments-or'],
@@ -213,7 +213,7 @@ it('does not trade the ORDER BY an index serves for an IN list it would seek on'
     ]]);
 
     expect($result->suggestions)->toBe([])
-        ->and($result->unparsed)->toBe([]);
+        ->and(unsuggested($result))->toBe([]);
 });
 
 it('leaves a partial index use on a table under the row threshold to the threshold', function () {
@@ -228,7 +228,7 @@ it('leaves a partial index use on a table under the row threshold to the thresho
     );
 
     expect($result->suggestions)->toBe([])
-        ->and($result->unparsed)->toBe([])
+        ->and(unsuggested($result))->toBe([])
         ->and($result->accounting->of(FingerprintOutcome::RowThreshold))->toBe(1)
         ->and($result->accounting->of(FingerprintOutcome::Explained))->toBe(0);
 });
@@ -240,7 +240,7 @@ it('does not list a plan with no other symptom as unparsed when the SQL parser c
     $result = analyzeWithCardinality([$sql => partialIndexPlan('payments-function')], partialPayments());
 
     expect($result->suggestions)->toBe([])
-        ->and($result->unparsed)->toBe([])
+        ->and(unsuggested($result))->toBe([])
         ->and($result->accounting->of(FingerprintOutcome::Explained))->toBe(1);
 });
 
@@ -304,7 +304,7 @@ it('still suggests the index another table needs when the tables of a possible p
         ->analyze([new QueryAggregate('mysql', md5($sql), $sql, null, 10, 1000.0, 200.0, 1_700_000_000, 1_700_000_500)], $driver);
 
     expect(array_map(fn ($suggestion) => [$suggestion->table, $suggestion->columns], $result->suggestions))->toBe([['orders', ['status']]])
-        ->and($result->unparsed)->toBe([]);
+        ->and(unsuggested($result))->toBe([]);
 });
 
 it('names partial index use among the reasons of the Report summary and of the table section', function () {

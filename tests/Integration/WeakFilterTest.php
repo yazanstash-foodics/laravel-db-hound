@@ -59,7 +59,7 @@ it('leads the index of a soft-deleted table with the selective merchant_id, not 
         ->toContain('**Unparsed queries:** 0');
 });
 
-it('suggests no index for a query filtered only on the soft-delete column and a boolean', function () {
+it('suggests no index for a query filtered only on the soft-delete column and a boolean, listing it as skipped', function () {
     for ($i = 0; $i < 50; $i++) {
         DB::table('hound_ledger')->whereNull('deleted_at')->where('is_settled', false)->count();
     }
@@ -67,8 +67,23 @@ it('suggests no index for a query filtered only on the soft-delete column and a 
     $this->artisan('db-hound:flush --force')->assertSuccessful();
     $this->artisan('db-hound:analyze')->assertSuccessful();
 
+    // A decision db-hound made, not a query it failed to read; still accounted for as explained.
     expect(Storage::disk('local')->get('db-hound/latest.md'))
         ->toContain('No Suggestions.')
-        ->toContain('**Unparsed queries:** 1')
-        ->toContain('full scan on `hound_ledger`, but it has only low-selectivity predicates (`is_settled`, `deleted_at`)');
+        ->toContain("- **Skipped queries:** 1\n- **Unparsed queries:** 0\n")
+        ->toContain('- **Fingerprint accounting:** 1 explained = 1 analyzed')
+        ->toContain(<<<'MD'
+## Skipped queries
+
+- **mysql** — full scan on `hound_ledger`, but it has only low-selectivity predicates (`is_settled`, `deleted_at`)
+
+  ```sql
+  select count(*) as `aggregate` from `hound_ledger` where `deleted_at` is null and `is_settled` = ?
+  ```
+
+## Unparsed queries
+
+None.
+
+MD);
 });

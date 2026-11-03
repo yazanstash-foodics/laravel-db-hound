@@ -29,6 +29,9 @@ final class Analyzer
 
     public const REASON_NEEDS_SAMPLE = 'cannot EXPLAIN without a Sample: the Fingerprint has a literal MySQL does not accept as a parameter';
 
+    /** Ends the reason of a Fingerprint with a column db-hound could not place: that column may be the one an index needs. */
+    private const UNRESOLVED = ' (some columns of the query could not be attributed to a table)';
+
     /** Share of the rows one value of an equality column matches on average above which the column is a weak filter. */
     public const LOW_SELECTIVITY_SHARE = 0.1;
 
@@ -57,9 +60,9 @@ final class Analyzer
     {
         /** @var list<TableDemand> $demands */
         $demands = [];
-        $unparsed = [];
-        /** @var list<UnparsedQuery> $weakOnly entries of $unparsed for a table with only low-selectivity predicates */
-        $weakOnly = [];
+        $unsuggested = [];
+        /** @var list<UnsuggestedQuery> $skippable entries of $unsuggested for a table with only low-selectivity predicates, or none */
+        $skippable = [];
         $resolved = [];
 
         /** @var array<int, FingerprintOutcome> $outcomes  object id => outcome */
@@ -100,14 +103,14 @@ final class Analyzer
             try {
                 $statement = ExplainStatement::for($shape, $sample, $driver, $this->placeholders);
             } catch (Throwable $e) {
-                $unparsed[] = new UnparsedQuery($query->connection, $query->sql, self::failure('inspecting its tables', $e));
+                $unsuggested[] = new UnsuggestedQuery($query->connection, $query->sql, self::failure('inspecting its tables', $e), UnsuggestedBecause::TableLookupFailed);
 
                 continue;
             }
 
             if ($statement === null) {
                 $outcomes[spl_object_id($query)] = FingerprintOutcome::NoSample;
-                $unparsed[] = new UnparsedQuery($query->connection, $query->sql, self::REASON_NEEDS_SAMPLE);
+                $unsuggested[] = new UnsuggestedQuery($query->connection, $query->sql, self::REASON_NEEDS_SAMPLE, UnsuggestedBecause::NoSample);
 
                 continue;
             }
@@ -116,7 +119,7 @@ final class Analyzer
                 $plan = $driver->explain($statement->sql, $statement->bindings);
             } catch (Throwable $e) {
                 $outcomes[spl_object_id($query)] = FingerprintOutcome::ExplainFailed;
-                $unparsed[] = new UnparsedQuery($query->connection, $query->sql, self::failure('EXPLAIN', $e));
+                $unsuggested[] = new UnsuggestedQuery($query->connection, $query->sql, self::failure('EXPLAIN', $e), UnsuggestedBecause::ExplainFailed);
 
                 continue;
             }
@@ -128,10 +131,10 @@ final class Analyzer
             $small = false;
 
             try {
-                $demanded = $this->candidates($query, $shape->sql, $plan, $driver, $unparsed, $small, $weakOnly);
+                $demanded = $this->candidates($query, $shape->sql, $plan, $driver, $unsuggested, $small, $skippable);
             } catch (Throwable $e) {
                 $outcomes[spl_object_id($query)] = FingerprintOutcome::Other;
-                $unparsed[] = new UnparsedQuery($query->connection, $query->sql, self::failure('inspecting its tables', $e));
+                $unsuggested[] = new UnsuggestedQuery($query->connection, $query->sql, self::failure('inspecting its tables', $e), UnsuggestedBecause::TableLookupFailed);
 
                 continue;
             }
@@ -144,7 +147,7 @@ final class Analyzer
             array_push($demands, ...$demanded);
         }
 
-        $ranked = $this->suggestions($demands, $queries, $driverFor, $unparsed);
+        $ranked = $this->suggestions($demands, $queries, $driverFor, $unsuggested);
         usort($ranked, fn (Suggestion $a, Suggestion $b) => $b->impact() <=> $a->impact());
 
         // An existing index can be replaced once: by the Suggestion with the most impact.
@@ -159,7 +162,7 @@ final class Analyzer
             }
         }
 
-        return new AnalysisResult($ranked, self::distinct(self::withoutServed($unparsed, $weakOnly, $ranked)), FingerprintAccounting::tally(array_values($outcomes)));
+        return new AnalysisResult($ranked, self::distinct(self::withoutServed($unsuggested, $skippable, $ranked)), FingerprintAccounting::tally(array_values($outcomes)));
     }
 
     /**
@@ -172,15 +175,15 @@ final class Analyzer
      * queries did not filter or sort on it, and consolidated again, until
      * no such column is left. A demand with nothing worth indexing left,
      * or whose rest an existing index already serves, makes no Suggestion:
-     * its Fingerprint goes to `$unparsed` with the reason.
+     * its Fingerprint goes to `$unsuggested` with the reason.
      *
      * @param  list<TableDemand>  $demands
      * @param  list<QueryAggregate>  $queries  every captured Fingerprint
      * @param  Closure(string): Driver  $driverFor  a connection's Driver
-     * @param  list<UnparsedQuery>  $unparsed
+     * @param  list<UnsuggestedQuery>  $unsuggested
      * @return list<Suggestion>
      */
-    private function suggestions(array $demands, array $queries, Closure $driverFor, array &$unparsed): array
+    private function suggestions(array $demands, array $queries, Closure $driverFor, array &$unsuggested): array
     {
         if ($demands === []) {
             return [];
@@ -231,7 +234,13 @@ final class Analyzer
         }
 
         foreach ($dropped as $demand => $reason) {
-            $unparsed[] = new UnparsedQuery($demands[$demand]->query->connection, $demands[$demand]->query->sql, $reason);
+            $unresolved = $demands[$demand]->unresolvedColumns;
+            $unsuggested[] = new UnsuggestedQuery(
+                $demands[$demand]->query->connection,
+                $demands[$demand]->query->sql,
+                $reason.($unresolved ? self::UNRESOLVED : ''),
+                $unresolved ? UnsuggestedBecause::UnresolvedColumns : UnsuggestedBecause::OnlyWriteHot,
+            );
         }
 
         foreach ($consolidated as $suggestion) {
@@ -245,7 +254,7 @@ final class Analyzer
      * The Suggestions the demands make, each built without the columns of
      * `$without`, one per connection, table and columns; with, for each,
      * its demands, the index each demand needs, and why each demand that
-     * makes none goes to the "unparsed" section.
+     * makes none is skipped.
      *
      * @param  list<TableDemand>  $demands
      * @param  array<int, array<string, array<string, int>>>  $without
@@ -339,17 +348,17 @@ final class Analyzer
     }
 
     /**
-     * `$unparsed` without the `$skippable` entries of a Fingerprint a
+     * `$unsuggested` without the `$skippable` entries of a Fingerprint a
      * Suggestion serves: a table of the query (the one around a whereHas,
-     * say) having only low-selectivity predicates does not leave it
-     * unserved when another of its tables gets an index.
+     * say) having only low-selectivity predicates, or none, does not leave
+     * it unserved when another of its tables gets an index.
      *
-     * @param  list<UnparsedQuery>  $unparsed
-     * @param  list<UnparsedQuery>  $skippable
+     * @param  list<UnsuggestedQuery>  $unsuggested
+     * @param  list<UnsuggestedQuery>  $skippable
      * @param  list<Suggestion>  $suggestions
-     * @return list<UnparsedQuery>
+     * @return list<UnsuggestedQuery>
      */
-    private static function withoutServed(array $unparsed, array $skippable, array $suggestions): array
+    private static function withoutServed(array $unsuggested, array $skippable, array $suggestions): array
     {
         $served = [];
 
@@ -367,22 +376,22 @@ final class Analyzer
             }
         }
 
-        return array_values(array_filter($unparsed, fn (UnparsedQuery $query) => ! isset($skip[spl_object_id($query)])));
+        return array_values(array_filter($unsuggested, fn (UnsuggestedQuery $query) => ! isset($skip[spl_object_id($query)])));
     }
 
     /**
      * Each Fingerprint once per reason: a plan can show the same symptom on
      * several accesses (a self-join, a table read in several subqueries).
      *
-     * @param  list<UnparsedQuery>  $unparsed
-     * @return list<UnparsedQuery>
+     * @param  list<UnsuggestedQuery>  $unsuggested
+     * @return list<UnsuggestedQuery>
      */
-    private static function distinct(array $unparsed): array
+    private static function distinct(array $unsuggested): array
     {
         $distinct = [];
 
-        foreach ($unparsed as $query) {
-            $distinct[$query->connection."\0".$query->sql."\0".$query->reason] ??= $query;
+        foreach ($unsuggested as $query) {
+            $distinct[$query->connection."\0".$query->sql."\0".$query->reason."\0".$query->because->name] ??= $query;
         }
 
         return array_values($distinct);
@@ -550,17 +559,17 @@ final class Analyzer
      * existing one serves: each with the table reference it reads, the
      * symptoms, and how selective an equality on
      * each of the table's columns is. Symptomatic accesses db-hound cannot
-     * turn into a candidate are added to `$unparsed`; `$small` is set when
+     * turn into a candidate are added to `$unsuggested`; `$small` is set when
      * every symptomatic access was left out because its table is under the
      * row threshold. An access whose table has only low-selectivity
-     * predicates is also added to `$weakOnly`: it is listed only when no
-     * Suggestion serves the Fingerprint.
+     * predicates, or none, is also added to `$skippable`: it is listed only
+     * when no Suggestion serves the Fingerprint.
      *
-     * @param  list<UnparsedQuery>  $unparsed
-     * @param  list<UnparsedQuery>  $weakOnly
+     * @param  list<UnsuggestedQuery>  $unsuggested
+     * @param  list<UnsuggestedQuery>  $skippable
      * @return list<TableDemand>
      */
-    private function candidates(QueryAggregate $query, string $sql, Plan $plan, Driver $driver, array &$unparsed, bool &$small, array &$weakOnly): array
+    private function candidates(QueryAggregate $query, string $sql, Plan $plan, Driver $driver, array &$unsuggested, bool &$small, array &$skippable): array
     {
         $fingerprint = $query->sql;
         $connection = $query->connection;
@@ -597,7 +606,7 @@ final class Analyzer
             }
 
             if ($e instanceof UnparseableSql) {
-                $unparsed[] = new UnparsedQuery($connection, $fingerprint, $e->getMessage());
+                $unsuggested[] = new UnsuggestedQuery($connection, $fingerprint, $e->getMessage(), UnsuggestedBecause::ParserFailed);
 
                 return [];
             }
@@ -608,7 +617,7 @@ final class Analyzer
             }
 
             // A parser bug on one query must not abort the run.
-            $unparsed[] = new UnparsedQuery($connection, $fingerprint, 'the SQL parser failed on it ('.class_basename($e).')');
+            $unsuggested[] = new UnsuggestedQuery($connection, $fingerprint, 'the SQL parser failed on it ('.class_basename($e).')', UnsuggestedBecause::ParserFailed);
 
             return [];
         }
@@ -647,12 +656,12 @@ final class Analyzer
                 }
 
                 $looked = true;
-                $unparsed[] = new UnparsedQuery($connection, $fingerprint, sprintf(
+                $unsuggested[] = new UnsuggestedQuery($connection, $fingerprint, sprintf(
                     '%s on `%s`, but %s',
                     implode(', ', $reasons),
                     $access->table,
                     $references === [] ? 'the query has no such table' : 'several table references have that name',
-                ));
+                ), UnsuggestedBecause::UnattributableTable);
 
                 continue;
             }
@@ -696,38 +705,51 @@ final class Analyzer
 
             // The Driver inspects the connection's default database: another one's table would be looked up in the wrong schema.
             if ($reference->database !== null) {
-                $unparsed[] = new UnparsedQuery($connection, $fingerprint, sprintf(
+                $unsuggested[] = new UnsuggestedQuery($connection, $fingerprint, sprintf(
                     "%s on `%s`, but it is read from database `%s`, and db-hound inspects only the connection's default database",
                     implode(', ', $reasons),
                     $access->table,
                     $reference->database,
-                ));
+                ), UnsuggestedBecause::OtherDatabase);
 
                 continue;
             }
 
-            $demand = $this->demand($query, $access, $plan, $reasons, $reference, $before, $position === $driving, $driver, $pastKey);
+            $demand = $this->demand($query, $access, $plan, $reasons, $reference, $before, $position === $driving, $driver, $pastKey, $extracted->hasUnresolvedColumns);
             $candidate = $demand->candidate();
 
             if ($candidate === null) {
-                if ($reference->hasUnindexablePredicates || $extracted->hasUnresolvedColumns) {
-                    $unparsed[] = new UnparsedQuery($connection, $fingerprint, sprintf(
-                        '%s on `%s`, but no indexable predicate columns were found',
-                        implode(', ', $reasons),
-                        $reference->table,
-                    ));
+                // A column it cannot place, or a predicate it cannot read, may be what an index needs: that is a failure to read the query.
+                // Only negations, or no predicate at all, are a decision that no index helps.
+                [$but, $because] = match (true) {
+                    $extracted->hasUnresolvedColumns => ['no indexable predicate columns were found'.self::UNRESOLVED, UnsuggestedBecause::UnresolvedColumns],
+                    $reference->hasUnindexablePredicates => ['no indexable predicate columns were found', UnsuggestedBecause::UnindexablePredicates],
+                    $reference->negated !== [] => ['it has only negated predicates ('.self::columnList(array_values(array_unique($reference->negated))).')', UnsuggestedBecause::OnlyNegations],
+                    $reference->unfiltered() => ['the query has no predicate on it', UnsuggestedBecause::NoPredicates],
+                    default => [null, null],
+                };
+
+                if ($because === null) {
+                    continue;
+                }
+
+                $entry = $unsuggested[] = new UnsuggestedQuery($connection, $fingerprint, sprintf('%s on `%s`, but %s', implode(', ', $reasons), $reference->table, $but), $because);
+
+                if ($because === UnsuggestedBecause::NoPredicates) {
+                    $skippable[] = $entry;
                 }
 
                 continue;
             }
 
             if ($candidate->onlyWeak) {
-                $unparsed[] = $weakOnly[] = new UnparsedQuery($connection, $fingerprint, sprintf(
-                    '%s on `%s`, but it has only low-selectivity predicates (%s)',
+                $unsuggested[] = $skippable[] = new UnsuggestedQuery($connection, $fingerprint, sprintf(
+                    '%s on `%s`, but it has only low-selectivity predicates (%s)%s',
                     implode(', ', $reasons),
                     $reference->table,
                     implode(', ', array_map(fn (string $column) => '`'.$column.'`', $candidate->columns)),
-                ));
+                    $extracted->hasUnresolvedColumns ? self::UNRESOLVED : '',
+                ), $extracted->hasUnresolvedColumns ? UnsuggestedBecause::UnresolvedColumns : UnsuggestedBecause::OnlyLowSelectivity);
 
                 continue;
             }
@@ -750,7 +772,7 @@ final class Analyzer
      * @param  list<string>  $before  names of the references the plan reads before this one
      * @param  list<string>  $required
      */
-    private function demand(QueryAggregate $query, TableAccess $access, Plan $plan, array $reasons, TableColumns $reference, array $before, bool $drives, Driver $driver, array $required = []): TableDemand
+    private function demand(QueryAggregate $query, TableAccess $access, Plan $plan, array $reasons, TableColumns $reference, array $before, bool $drives, Driver $driver, array $required = [], bool $unresolvedColumns = false): TableDemand
     {
         $table = $reference->table;
         $indexes = $driver->indexes($table);
@@ -774,6 +796,7 @@ final class Analyzer
             rowCount: $driver->rowCount($table),
             columnTypes: $driver->columnTypes($table),
             required: $required,
+            unresolvedColumns: $unresolvedColumns,
         );
     }
 

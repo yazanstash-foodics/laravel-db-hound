@@ -28,7 +28,7 @@ it('suggests nothing for a small table\'s query a unique index serves (staging e
     $result = analyzeWithCardinality([SEGMENTATION_RULES_SQL => $plan], segmentationRules());
 
     expect($result->suggestions)->toBe([])
-        ->and($result->unparsed)->toBe([]);
+        ->and(unsuggested($result))->toBe([]);
 })->with([
     'ref on the unique index, no filesort' => fn () => new Plan([new TableAccess('segmentation_rules', 'ref', 'segmentation_rules_merchant_id_order_unique', 3)]),
     'full scan with a filesort' => fn () => new Plan([new TableAccess('segmentation_rules', 'ALL', null, 6)], usingFilesort: true),
@@ -40,7 +40,7 @@ it('trusts index statistics from the minimum rows for cardinality up, and ignore
         segmentationRules($rows),
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => $suggestion->columns, $result->suggestions))->toBe($expected);
 })->with([
     // One merchant in the statistics: below the minimum that says nothing, so the unique index serves the query.
@@ -70,7 +70,7 @@ it('extends the tenant index of a small table instead of dropping its tenant col
         ]],
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->extends?->name], $result->suggestions))
         ->toBe([[['merchant_id', 'is_contact_user', 'created_at'], 'merchant_users_merchant_id_index']]);
 });
@@ -102,7 +102,7 @@ it('extends the index the plan uses on a small table instead of leading with the
 
     // Neither leads with an equality column other than `source`. On four rows nothing says a `source` finds only a
     // handful of rows (a varchar, not a key-like type), so the two are not folded into one (see SelectivePrefixFoldTest).
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->extends?->name], $result->suggestions))
         ->toBe([
             [['source', 'action', 'type', 'created_at'], 'integration_logs_source_index'],

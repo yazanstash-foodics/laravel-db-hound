@@ -79,7 +79,7 @@ it('suggests an index on the table of a HAVING subquery (having_subqueries)', fu
     $result = analyzeWithCardinality([$sql => subqueryPlan($plan)], subqueryShapes());
 
     expect(suggestedIndexes($result))->toContain(['comments', ['post_id', 'status']])
-        ->and($result->unparsed)->toBe([]);
+        ->and(unsuggested($result))->toBe([]);
 })->with([
     'an EXISTS ORed with an aggregate' => ['select `posts`.`author_id`, count(*) as `c` from `posts` group by `posts`.`author_id` having exists (select * from `comments` where `comments`.`post_id` = `posts`.`author_id` and `comments`.`status` = ?) or count(*) > ?', 'having-exists-or'],
     'a scalar subquery compared to an aggregate alias' => ['select `posts`.`author_id`, count(*) as `c` from `posts` group by `posts`.`author_id` having `c` > (select count(*) from `comments` where `comments`.`post_id` = `posts`.`author_id` and `comments`.`status` = ?)', 'having-scalar'],
@@ -88,7 +88,7 @@ it('suggests an index on the table of a HAVING subquery (having_subqueries)', fu
 it('suggests an index on the table of a subquery MySQL evaluates once (optimized_away_subqueries)', function (string $sql, string $plan, array $expected) {
     $result = analyzeWithCardinality([$sql => subqueryPlan($plan)], subqueryShapes());
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(suggestedIndexes($result))->toBe([$expected]);
 })->with([
     // The plan seeks on `merchant_id` alone and checks `is_approved` and `type` on the rows.
@@ -100,7 +100,7 @@ it('suggests the index of a dependent EXISTS when the table around it has only w
     $result = analyzeWithCardinality([OR_EXISTS => subqueryPlan('or-exists')], subqueryShapes());
 
     expect(suggestedIndexes($result))->toBe([['adjustments', ['merchant_id', 'type']]])
-        ->and($result->unparsed)->toBe([]);
+        ->and(unsuggested($result))->toBe([]);
 });
 
 it('lists the table around a dependent EXISTS as skipped when nothing else is suggested', function () {
@@ -110,7 +110,8 @@ it('lists the table around a dependent EXISTS as skipped when nothing else is su
     $result = analyzeWithCardinality([OR_EXISTS => subqueryPlan('or-exists')], $shapes);
 
     expect(suggestedIndexes($result))->toBe([])
-        ->and(unparsedReasons($result))->toBe(['full scan on `merchants`, but it has only low-selectivity predicates (`deleted_at`)']);
+        ->and($result->unparsed)->toBe([])
+        ->and(skippedReasons($result))->toBe(['full scan on `merchants`, but it has only low-selectivity predicates (`deleted_at`)']);
 });
 
 it('walks a subquery attached inside an attached subquery', function () {

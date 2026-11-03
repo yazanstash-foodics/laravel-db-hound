@@ -26,7 +26,7 @@ The first release. db-hound captures production queries and suggests missing MyS
   - never indexing a column captured UPDATEs write at least as often as the served queries that need it run, with a note naming it and those UPDATEs;
   - a header accounting for every analyzed Fingerprint by outcome (explained, or why not), and a warning naming any qualification threshold looser than its default;
   - a one-screen summary table of every Suggestion, then one section per table (ordered by summed impact) giving its row count, existing indexes and column types once, followed by its Suggestions with their `EXPLAIN` summary, impact and served Fingerprints;
-  - an "Unparsed queries" section, so nothing is silently dropped.
+  - a "Skipped queries" section for flagged queries no index helps (only low-selectivity predicates, only columns frequent UPDATEs write, only negations such as `!=`, no predicate on the table at all) and an "Unparsed queries" section for those db-hound could not read (parser, `EXPLAIN` or table lookup failures, shapes it cannot attribute, predicates it does not read as an index's such as an `OR` or a function of a column), so nothing is silently dropped and a decision is never mistaken for a failure.
 - `db-hound:dump` writes a sensitive JSONL Dump with decrypted Samples, raw `EXPLAIN` output, schema context and impact stats. It is always `0600` with a `-SENSITIVE` suffix, local and non-public disks only, and prints a warning.
 
 ### Documentation

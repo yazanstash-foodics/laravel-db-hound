@@ -125,7 +125,7 @@ it('drops a candidate an existing index covers as a left prefix', function () {
     );
 
     expect($result->suggestions)->toBe([])
-        ->and($result->unparsed)->toBe([]);
+        ->and(unsuggested($result))->toBe([]);
 });
 
 it('drops a candidate an existing index covers with its equality columns in another order', function () {
@@ -135,7 +135,7 @@ it('drops a candidate an existing index covers with its equality columns in anot
     );
 
     expect($result->suggestions)->toBe([])
-        ->and($result->unparsed)->toBe([]);
+        ->and(unsuggested($result))->toBe([]);
 });
 
 it('orders the equality columns of a candidate so another Fingerprint\'s index is its left prefix', function () {
@@ -381,7 +381,7 @@ it('consolidates a candidate whose equality columns are a subset of another\'s i
         stats: [$smaller => [10, 300.0, 50.0], $larger => [20, 200.0, 80.0]],
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->columns)->toBe($columns)
         ->and($result->suggestions[0]->fingerprints)->toBe([$smaller, $larger])
@@ -425,7 +425,7 @@ it('drops a candidate an existing index serves with its equality and weak-filter
     );
 
     expect($result->suggestions)->toBe([])
-        ->and($result->unparsed)->toBe([]);
+        ->and(unsuggested($result))->toBe([]);
 })->with([
     'equality columns' => [
         'select * from `orders` where `customer_id` = ? and `branch_id` = ? and `created_at` > ?',
@@ -461,7 +461,7 @@ it('suggests one index for the polymorphic lookups written with their equality c
         stats: [$idThenType => [17, 10.37, 1.79], $typeThenId => [1, 0.46, 0.46], $count => [1, 0.39, 0.39]],
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->columns)->toBe(['pendable_id', 'pendable_type', 'deleted_at'])
         ->and($result->suggestions[0]->fingerprints)->toBe([$idThenType, $typeThenId, $count])
@@ -513,7 +513,8 @@ it('suggests one index for the tenant\'s users listed by creation date, whatever
             [['merchant_id', 'created_at'], 'merchant_users_merchant_id_index', [$notDeleted, $contactUser]],
             [['created_at'], null, [$allUsers]],
         ])
-        ->and(array_map(fn ($unparsed) => $unparsed->sql, $result->unparsed))->toBe([$countAll]);
+        ->and($result->unparsed)->toBe([])
+        ->and(array_map(fn ($skipped) => $skipped->sql, $result->skipped))->toBe([$countAll]);
 });
 
 it('suggests one index for the tenant\'s branches sorted by creation date (staging #8, #18)', function () {
@@ -540,7 +541,7 @@ it('suggests one index for the tenant\'s branches sorted by creation date (stagi
         stats: [$active => [1, 7.97, 7.97], $approved => [1, 2.05, 2.05]],
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->extends?->name, $suggestion->fingerprints], $result->suggestions))
         ->toBe([[['merchant_id', 'is_active', 'created_at'], 'branches_merchant_id_index', [$active, $approved]]]);
 });
@@ -555,7 +556,7 @@ it('keeps a candidate whose sort or range column the query also filters as a wea
         $tables,
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->extends?->name], $result->suggestions))
         ->toBe([[['customer_id', str_contains($sql, 'kind') ? 'kind' : 'closed_at'], 'orders_customer_id_index']]);
 })->with([
@@ -573,7 +574,7 @@ it('does not fold a candidate into a Suggestion that leaves out the column its q
         stats: [$sql => [1, 10.0, 10.0], $other => [10, 1000.0, 200.0]],
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->fingerprints], $result->suggestions))
         ->toBe([
             [['customer_id', 'created_at'], [$other]],
@@ -594,7 +595,7 @@ it('folds a candidate into one that adds only weak filters, keeping them, whiche
         stats: [$smaller => [10, $impacts[0], 50.0], $larger => [10, $impacts[1], 50.0]],
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->columns)->toBe($columns)
         ->and($result->suggestions[0]->fingerprints)->toEqualCanonicalizing([$smaller, $larger])
