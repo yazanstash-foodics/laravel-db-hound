@@ -18,6 +18,7 @@ final readonly class TableDemand
      * @param  array<string, string>  $columnTypes  the table's, column => type
      * @param  list<string>  $required  columns the index must have even when they are weak filters: those the plan checks row by row past the part of its index it seeks on
      * @param  bool  $unresolvedColumns  whether some column of the query could not be attributed to a table
+     * @param  list<string>  $softDeleteColumns  columns a soft delete sets, whose predicate (`deleted_at IS NULL`) matches nearly every row
      */
     public function __construct(
         public QueryAggregate $query,
@@ -34,6 +35,7 @@ final readonly class TableDemand
         public array $columnTypes,
         public array $required = [],
         public bool $unresolvedColumns = false,
+        public array $softDeleteColumns = [],
     ) {}
 
     /**
@@ -139,7 +141,9 @@ final readonly class TableDemand
      * range), would break the ORDER BY the plan's index serves (a filesort
      * of every row it seeks would replace a read that can stop early), or
      * adds only weak filters, unless it extends the index the access seeks
-     * on in full by them.
+     * on in full by them. None either when each seek finds at most one row.
+     * A soft-delete column is never among them: it matches nearly every
+     * row, so it may trail the index, but is no reason to suggest it.
      *
      * @return list<string>
      */
@@ -147,7 +151,7 @@ final readonly class TableDemand
     {
         $used = $this->access->usedKeyParts;
 
-        if ($used === null || ! $this->access->checksRowsPastKey()) {
+        if ($used === null || ! $this->access->checksRowsPastKey() || $this->seeksSingleRows($used)) {
             return [];
         }
 
@@ -166,7 +170,11 @@ final readonly class TableDemand
         $reference = $this->reference;
         $ranges = [...$reference->ranges, ...$reference->notNulls];
         $predicates = [...array_column($reference->equalities, 'column'), ...$reference->lists, ...$reference->nulls, ...$ranges];
-        $unused = array_values(array_diff(array_intersect($candidate->columns, $predicates), $used));
+        $softDeletes = array_map(strtolower(...), $this->softDeleteColumns);
+        $unused = array_values(array_filter(
+            array_diff(array_intersect($candidate->columns, $predicates), $used),
+            fn (string $column) => ! in_array(strtolower($column), $softDeletes, true),
+        ));
 
         if (array_diff($unused, $ranges) === [] && array_intersect($used, $ranges) !== []) {
             return [];
@@ -183,6 +191,40 @@ final readonly class TableDemand
         }
 
         return $unused;
+    }
+
+    /**
+     * Whether each seek of the access finds at most one row: the columns it
+     * seeks on (`$used`) hold every column of a unique index or the primary
+     * key, each pinned by an equality or an `IN` list, so checking the other
+     * predicates on the rows it finds is free. A join equality pins only once
+     * the table it joins is read; a null-safe `<=>` only a primary key column,
+     * the one never NULL.
+     *
+     * @param  list<string>  $used
+     */
+    private function seeksSingleRows(array $used): bool
+    {
+        $pinned = $this->reference->lists;
+
+        // A join column pins the seek only once the table it joins is read.
+        foreach ($this->reference->equalities as ['column' => $column, 'joinedTo' => $joinedTo]) {
+            if ($joinedTo === null || in_array($joinedTo, $this->readBefore, true)) {
+                $pinned[] = $column;
+            }
+        }
+
+        foreach ($this->indexes as $index) {
+            // `<=>` finds every NULL of a column a unique index allows several of; the primary key has none.
+            $seeks = $index->isPrimary() ? $pinned : array_diff($pinned, $this->reference->nullSafe);
+
+            if ($index->unique && $index->columns !== [] && ! in_array('', $index->columns, true)
+                && array_diff($index->columns, $used) === [] && array_diff($index->columns, $seeks) === []) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

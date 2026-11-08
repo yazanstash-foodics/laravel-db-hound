@@ -77,7 +77,8 @@ it('folds a second index on the same key-like leading column into the one with m
         ->and($suggestions[0]->impact())->toEqualWithDelta(116.04, 0.001)
         ->and($suggestions[0]->notes)->toBe([
             'also serves `` '.mb_substr(PENDABLE_COUNT, 0, 200).'… ``, which would need `(pendable_id, status, deleted_at)`: '
-            .'`pendable_id` finds only a handful of rows, so its other predicates (`status`, `deleted_at`) are checked on the rows it finds '
+            .'`pendable_id` finds only a handful of rows (assumed from the column type, `char(36)`, as no index statistics db-hound trusts measure it), '
+            .'so its other predicates (`status`, `deleted_at`) are checked on the rows it finds '
             .'rather than in a second index that leads with it.',
         ]);
 });
@@ -269,3 +270,27 @@ it('does not fold the Suggestion with more impact into one that leads with anoth
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->fingerprints], $result->suggestions))
         ->toBe([[['status', 'reference'], [$byStatus]], [['reference', 'total'], [$byReference]]]);
 });
+
+it('says when it assumed from the column type that the shared leading column finds only a handful of rows', function (string $column, array $tables, string $handful) {
+    $created = "select * from `orders` where `{$column}` = ? and `created_at` > ?";
+    $total = "select * from `orders` where `{$column}` = ? and `total` > ?";
+    $scan = new Plan([new TableAccess('orders', 'ALL', null, 1_000_000)]);
+
+    $result = analyzeWithCardinality([$created => $scan, $total => $scan], $tables, stats: [$created => [10, 900.0, 200.0], $total => [10, 100.0, 50.0]]);
+
+    expect($result->suggestions)->toHaveCount(1)
+        ->and($result->suggestions[0]->notes)->toBe([
+            'also serves `` '.$total.' ``, which would need `('.$column.', total)`: '.$handful
+            .', so its other predicates (`total`) are checked on the rows it finds rather than in a second index that leads with it.',
+        ]);
+})->with([
+    // Two orders per customer.
+    'by its statistics' => ['customer_id', millionOrders(['customer_id' => 500_000]), '`customer_id` finds only a handful of rows'],
+    'an integer foreign key without statistics' => ['customer_id', millionOrders(),
+        '`customer_id` finds only a handful of rows (assumed from the column type, `bigint unsigned`, as no index statistics db-hound trusts measure it)'],
+    'a UUID without statistics' => ['reference', millionOrders(),
+        '`reference` finds only a handful of rows (assumed from the column type, `char(36)`, as no index statistics db-hound trusts measure it)'],
+    // Statistics on a table this small say nothing about a column.
+    'a UUID on a table too small to trust its statistics' => ['reference', ordersOf(900, ['reference' => 900]),
+        '`reference` finds only a handful of rows (assumed from the column type, `char(36)`, as no index statistics db-hound trusts measure it)'],
+]);

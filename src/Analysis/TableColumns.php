@@ -18,6 +18,14 @@ final class TableColumns
     public array $equalities = [];
 
     /**
+     * The columns of `$equalities` compared with `<=>`, which a NULL
+     * matches: on a nullable column, one value may find many rows.
+     *
+     * @var list<string>
+     */
+    public array $nullSafe = [];
+
+    /**
      * Multi-value `IN (...)` lists: an equality to seek on, but a range to the
      * sort, which an index serves only when the sort leads with the column.
      *
@@ -86,9 +94,13 @@ final class TableColumns
         public readonly bool $selectList = false,
     ) {}
 
-    public function addEquality(string $column, ?string $joinedTo = null): void
+    public function addEquality(string $column, ?string $joinedTo = null, bool $nullSafe = false): void
     {
         $this->equalities[] = ['column' => $column, 'joinedTo' => $joinedTo];
+
+        if ($nullSafe) {
+            $this->nullSafe[] = $column;
+        }
     }
 
     public function addList(string $column): void
@@ -150,6 +162,7 @@ final class TableColumns
         $keep = fn (array $list) => array_values(array_diff($list, $columns));
 
         $without->equalities = array_values(array_filter($this->equalities, fn (array $equality) => ! in_array($equality['column'], $columns, true)));
+        $without->nullSafe = $keep($this->nullSafe);
         $without->lists = $keep($this->lists);
         $without->ranges = $keep($this->ranges);
         $without->nulls = $keep($this->nulls);

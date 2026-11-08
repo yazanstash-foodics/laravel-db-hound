@@ -320,3 +320,224 @@ it('names partial index use among the reasons of the Report summary and of the t
         ->not->toContain('attached_condition')
         ->not->toContain("'paid'");
 });
+
+it('suggests nothing when the access seeks a unique key in full: each seek finds at most one row', function () {
+    // An Eloquent eager load of a soft-deleting model.
+    $sql = 'select * from `merchants` where `merchants`.`id` in (?) and `merchants`.`deleted_at` is null';
+
+    $result = analyzeWithCardinality([$sql => partialIndexPlan('merchants-in-not-deleted')], ['merchants' => [
+        'rows' => 20_000,
+        'columns' => ['id' => 'bigint unsigned', 'name' => 'varchar(50)', 'deleted_at' => 'timestamp'],
+        'cardinality' => ['id' => 20_000],
+    ]]);
+
+    expect($result->suggestions)->toBe([])
+        ->and(unsuggested($result))->toBe([]);
+});
+
+/**
+ * A `coupons` table of 20,000 rows with a unique `code`.
+ *
+ * @return array<string, array{rows: int, columns: array<string, string>, indexes: list<Index>, cardinality: array<string, int>}>
+ */
+function partialCoupons(): array
+{
+    return ['coupons' => [
+        'rows' => 20_000,
+        'columns' => ['id' => 'bigint unsigned', 'code' => 'varchar(20)', 'merchant_id' => 'bigint unsigned', 'is_active' => 'tinyint(1)'],
+        'indexes' => [new Index('coupons_code_unique', ['code'], true)],
+        'cardinality' => ['id' => 20_000, 'code' => 20_000],
+    ]];
+}
+
+it('suggests nothing when the access seeks a unique index in full, whatever else it checks on the rows', function (string $sql, Plan $plan) {
+    $result = analyzeWithCardinality([$sql => $plan], partialCoupons());
+
+    expect($result->suggestions)->toBe([])
+        ->and(unsuggested($result))->toBe([]);
+})->with([
+    'a ref' => [
+        'select * from `coupons` where `code` = ? and `merchant_id` = ?',
+        new Plan([new TableAccess('coupons', 'ref', 'coupons_code_unique', 1, usedKeyParts: ['code'], checksRows: true)]),
+    ],
+    'an IN list read as a range' => ['select * from `coupons` where `code` in (?) and `merchant_id` = ?', partialIndexPlan('coupons-code-in')],
+]);
+
+it('still extends a non-unique index the access seeks in full by the IN list it checks on the rows', function () {
+    $sql = 'select * from `payments` where `merchant_id` = ? and `status` in (?)';
+
+    $result = analyzeWithCardinality([$sql => partialIndexPlan('payments-status-in')], partialPayments());
+
+    expect(partialSuggestions($result))->toBe([
+        [['merchant_id', 'status'], 'payments_merchant_id_index', [Analyzer::REASON_PARTIAL_INDEX_USE]],
+    ]);
+});
+
+it('still suggests seeking on a column a range access on the primary key checks on the rows', function () {
+    $sql = 'select * from `merchants` where `id` > ? and `name` = ?';
+    $plan = new Plan([new TableAccess('merchants', 'range', 'PRIMARY', 5_000, usedKeyParts: ['id'], checksRows: true)]);
+
+    $result = analyzeWithCardinality([$sql => $plan], ['merchants' => [
+        'rows' => 20_000,
+        'columns' => ['id' => 'bigint unsigned', 'name' => 'varchar(50)', 'deleted_at' => 'timestamp'],
+        'cardinality' => ['id' => 20_000],
+    ]]);
+
+    expect(partialSuggestions($result))->toBe([[['name'], null, [Analyzer::REASON_PARTIAL_INDEX_USE]]]);
+});
+
+/**
+ * An `orders` table of 20,000 rows over 400 merchants, with an index on
+ * `merchant_id` alone, soft-deleted and archived.
+ *
+ * @return array<string, array{rows: int, columns: array<string, string>, indexes: list<Index>, cardinality: array<string, int>}>
+ */
+function partialOrders(): array
+{
+    return ['orders' => [
+        'rows' => 20_000,
+        'columns' => [
+            'id' => 'bigint unsigned', 'merchant_id' => 'bigint unsigned', 'status' => 'varchar(20)', 'total' => 'decimal(10,2)',
+            'archived_at' => 'timestamp', 'deleted_at' => 'timestamp',
+        ],
+        'indexes' => [new Index('orders_merchant_id_index', ['merchant_id'], false)],
+        'cardinality' => ['id' => 20_000, 'merchant_id' => 400],
+    ]];
+}
+
+/**
+ * The Analyzer as the package configures it, with its soft-delete columns set.
+ *
+ * @param  list<string>  $softDeleteColumns
+ */
+function softDeleteAnalyzer(array $softDeleteColumns): Analyzer
+{
+    config()->set('app.key', 'base64:'.base64_encode(str_repeat('k', 32)));
+    config()->set('db-hound.analysis.soft_delete_columns', $softDeleteColumns);
+
+    return app(Analyzer::class);
+}
+
+it('does not suggest an index for a soft-delete column alone the plan checks on the rows', function (array $softDeleteColumns, string $sql, string $plan) {
+    $result = analyzeWithCardinality([$sql => partialIndexPlan($plan)], partialOrders(), softDeleteAnalyzer($softDeleteColumns));
+
+    expect($result->suggestions)->toBe([])
+        ->and(unsuggested($result))->toBe([]);
+})->with([
+    'the default `deleted_at`' => [['deleted_at'], 'select * from `orders` where `merchant_id` = ? and `orders`.`deleted_at` is null', 'orders-not-deleted'],
+    'a configured `archived_at`' => [['archived_at'], 'select * from `orders` where `merchant_id` = ? and `archived_at` is null', 'orders-not-archived'],
+]);
+
+it('still suggests an index for a column out of the soft-delete columns the plan checks on the rows', function () {
+    $sql = 'select * from `orders` where `merchant_id` = ? and `orders`.`deleted_at` is null';
+
+    $result = analyzeWithCardinality([$sql => partialIndexPlan('orders-not-deleted')], partialOrders(), softDeleteAnalyzer(['archived_at']));
+
+    expect(partialSuggestions($result))->toBe([
+        [['merchant_id', 'deleted_at'], 'orders_merchant_id_index', [Analyzer::REASON_PARTIAL_INDEX_USE]],
+    ]);
+});
+
+it('suggests the index for the other predicates the plan checks on the rows besides a soft-delete column', function () {
+    $sql = 'select * from `orders` where `merchant_id` = ? and `status` = ? and `orders`.`deleted_at` is null';
+
+    $result = analyzeWithCardinality([$sql => partialIndexPlan('orders-status-not-deleted')], partialOrders());
+
+    expect(unsuggested($result))->toBe([])
+        ->and(partialSuggestions($result))->toBe([
+            [['merchant_id', 'status', 'deleted_at'], 'orders_merchant_id_index', [Analyzer::REASON_PARTIAL_INDEX_USE]],
+        ]);
+});
+
+it('suggests nothing when the access seeks the primary key in full, whatever else it checks on the rows', function (string $sql, Plan $plan) {
+    $result = analyzeWithCardinality([$sql => $plan], ['merchants' => [
+        'rows' => 20_000,
+        'columns' => ['id' => 'bigint unsigned', 'owner_id' => 'bigint unsigned', 'name' => 'varchar(50)', 'deleted_at' => 'timestamp'],
+        'indexes' => [new Index('merchants_owner_id_index', ['owner_id'], false)],
+        'cardinality' => ['id' => 20_000, 'owner_id' => 400],
+    ]]);
+
+    expect($result->suggestions)->toBe([])
+        ->and(unsuggested($result))->toBe([]);
+})->with([
+    'an IN list read as a range' => [
+        'select * from `merchants` where `id` in (?) and `name` = ?',
+        new Plan([new TableAccess('merchants', 'range', 'PRIMARY', 1, usedKeyParts: ['id'], checksRows: true)]),
+    ],
+    // InnoDB appends the primary key to a secondary index, so the access may seek on it there.
+    'through the primary key a secondary index ends with' => [
+        'select * from `merchants` where `owner_id` = ? and `id` = ? and `name` = ?',
+        new Plan([new TableAccess('merchants', 'ref', 'merchants_owner_id_index', 1, usedKeyParts: ['owner_id', 'id'], checksRows: true)]),
+    ],
+    // The primary key is never NULL, so a null-safe equality pins it as `=` does.
+    'a null-safe equality' => [
+        'select * from `merchants` where `owner_id` = ? and `id` <=> ? and `name` = ?',
+        new Plan([new TableAccess('merchants', 'ref', 'merchants_owner_id_index', 1, usedKeyParts: ['owner_id', 'id'], checksRows: true)]),
+    ],
+]);
+
+it('lets a soft-delete column trail the index other predicates need but never require it', function () {
+    $deleted = 'select * from `orders` where `merchant_id` = ? and `status` = ? and `orders`.`deleted_at` is null';
+    $total = 'select * from `orders` where `merchant_id` = ? and `status` = ? and `total` > ?';
+    $plan = new Plan([new TableAccess('orders', 'ref', 'orders_merchant_id_index', 50, usedKeyParts: ['merchant_id'], checksRows: true)]);
+
+    $result = analyzeWithCardinality([$deleted => $plan, $total => $plan], partialOrders());
+
+    // `deleted_at` is an optional weak filter of the first Fingerprint's index, so one index serves both.
+    expect(unsuggested($result))->toBe([])
+        ->and(partialSuggestions($result))->toBe([
+            [['merchant_id', 'status', 'total'], 'orders_merchant_id_index', [Analyzer::REASON_PARTIAL_INDEX_USE]],
+        ])
+        ->and($result->suggestions[0]->fingerprints)->toEqualCanonicalizing([$deleted, $total]);
+});
+
+it('still suggests seeking on the rows a range on a unique key checks when the column it joins is read later', function (string $sql, Plan $plan, array $columns) {
+    $tables = [
+        ...partialCoupons(),
+        'redemptions' => [
+            'rows' => 50_000,
+            'columns' => ['id' => 'bigint unsigned', 'coupon_code' => 'varchar(20)', 'coupon_id' => 'bigint unsigned'],
+            'indexes' => [
+                new Index('redemptions_coupon_code_index', ['coupon_code'], false),
+                new Index('redemptions_coupon_id_index', ['coupon_id'], false),
+            ],
+            'cardinality' => ['id' => 50_000, 'coupon_code' => 20_000, 'coupon_id' => 20_000],
+        ],
+    ];
+
+    $result = analyzeWithCardinality([$sql => $plan], $tables);
+
+    expect(unsuggested($result))->toBe([])
+        ->and(array_map(fn ($suggestion) => [$suggestion->table, $suggestion->columns, $suggestion->reasons], $result->suggestions))->toBe([
+            ['coupons', $columns, [Analyzer::REASON_PARTIAL_INDEX_USE]],
+        ]);
+})->with([
+    'a unique index' => [
+        'select * from `coupons` inner join `redemptions` on `redemptions`.`coupon_code` = `coupons`.`code` where `coupons`.`code` like ? and `coupons`.`merchant_id` = ?',
+        new Plan([
+            new TableAccess('coupons', 'range', 'coupons_code_unique', 8_000, usedKeyParts: ['code'], checksRows: true),
+            new TableAccess('redemptions', 'ref', 'redemptions_coupon_code_index', 2, usedKeyParts: ['coupon_code']),
+        ]),
+        ['merchant_id', 'code'],
+    ],
+    // A chunkById of the driving table.
+    'the primary key' => [
+        'select * from `coupons` inner join `redemptions` on `redemptions`.`coupon_id` = `coupons`.`id` where `coupons`.`id` > ? and `coupons`.`merchant_id` = ?',
+        new Plan([
+            new TableAccess('coupons', 'range', 'PRIMARY', 8_000, usedKeyParts: ['id'], checksRows: true),
+            new TableAccess('redemptions', 'ref', 'redemptions_coupon_id_index', 2, usedKeyParts: ['coupon_id']),
+        ]),
+        // InnoDB appends the primary key to the index, so it seeks the range on `id` without naming it.
+        ['merchant_id'],
+    ],
+]);
+
+it('still suggests seeking on the rows a null-safe equality on a unique key checks: it matches every NULL', function () {
+    $sql = 'select * from `coupons` where `code` <=> ? and `merchant_id` = ?';
+    $plan = new Plan([new TableAccess('coupons', 'ref', 'coupons_code_unique', 2_500, usedKeyParts: ['code'], checksRows: true)]);
+
+    $result = analyzeWithCardinality([$sql => $plan], partialCoupons());
+
+    expect(unsuggested($result))->toBe([])
+        ->and(partialSuggestions($result))->toBe([[['code', 'merchant_id'], null, [Analyzer::REASON_PARTIAL_INDEX_USE]]]);
+});

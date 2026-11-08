@@ -1,0 +1,37 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "1.41"
+        },
+        "table": {
+            "table_name": "coupons",
+            "access_type": "range",
+            "possible_keys": [
+                "coupons_code_unique"
+            ],
+            "key": "coupons_code_unique",
+            "used_key_parts": [
+                "code"
+            ],
+            "key_length": "83",
+            "rows_examined_per_scan": 2,
+            "rows_produced_per_join": 0,
+            "filtered": "10.00",
+            "index_condition": "(`db_hound_shapes`.`coupons`.`code` in ('C14','C15'))",
+            "cost_info": {
+                "read_cost": "1.39",
+                "eval_cost": "0.02",
+                "prefix_cost": "1.41",
+                "data_read_per_join": "20"
+            },
+            "used_columns": [
+                "id",
+                "code",
+                "merchant_id",
+                "is_active"
+            ],
+            "attached_condition": "(`db_hound_shapes`.`coupons`.`merchant_id` = 3)"
+        }
+    }
+}

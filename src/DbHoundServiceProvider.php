@@ -77,6 +77,7 @@ class DbHoundServiceProvider extends PackageServiceProvider
             ),
             lowSelectivityShare: (float) $app->make('config')->get('db-hound.analysis.low_selectivity_share', Analyzer::LOW_SELECTIVITY_SHARE),
             minRowsForCardinality: (int) $app->make('config')->get('db-hound.analysis.min_rows_for_cardinality', Analyzer::MIN_ROWS_FOR_CARDINALITY),
+            softDeleteColumns: array_values(array_map(strval(...), (array) $app->make('config')->get('db-hound.analysis.soft_delete_columns', Analyzer::SOFT_DELETE_COLUMNS))),
         ));
 
         $this->app->bind(AnalysisDrivers::class, fn (Application $app) => new AnalysisDrivers(

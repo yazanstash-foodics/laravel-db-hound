@@ -38,6 +38,12 @@ final class Analyzer
     /** Table rows under which index statistics are ignored: so few rows say nothing about how many distinct values a column has. */
     public const MIN_ROWS_FOR_CARDINALITY = 1000;
 
+    /** Columns a soft delete sets: a predicate on one of them alone never makes a partial index use. */
+    public const SOFT_DELETE_COLUMNS = ['deleted_at'];
+
+    /**
+     * @param  list<string>  $softDeleteColumns  columns a soft delete sets: a predicate on one of them alone never makes a partial index use
+     */
     public function __construct(
         private readonly Encrypter $encrypter,
         private readonly ColumnExtractor $extractor = new ColumnExtractor,
@@ -46,6 +52,7 @@ final class Analyzer
         public readonly Qualification $qualification = new Qualification,
         private readonly float $lowSelectivityShare = self::LOW_SELECTIVITY_SHARE,
         private readonly int $minRowsForCardinality = self::MIN_ROWS_FOR_CARDINALITY,
+        private readonly array $softDeleteColumns = self::SOFT_DELETE_COLUMNS,
     ) {}
 
     /**
@@ -647,8 +654,9 @@ final class Analyzer
             return $fixed;
         };
 
-        $join = function (Suggestion $into, Suggestion $folded, int $fixed) use (&$members): void {
-            $into->serveThrough($folded, $fixed);
+        $join = function (Suggestion $into, Suggestion $folded, int $fixed) use (&$members, $demands): void {
+            $assumed = $demands[$members[spl_object_id($into)][0]]->selectivity->handfulAssumedFromType($into->columns[0]);
+            $into->serveThrough($folded, $fixed, $assumed);
             $members[spl_object_id($into)] = [...$members[spl_object_id($into)], ...$members[spl_object_id($folded)]];
             unset($members[spl_object_id($folded)]);
         };
@@ -923,6 +931,7 @@ final class Analyzer
             columnTypes: $driver->columnTypes($table),
             required: $required,
             unresolvedColumns: $unresolvedColumns,
+            softDeleteColumns: $this->softDeleteColumns,
         );
     }
 

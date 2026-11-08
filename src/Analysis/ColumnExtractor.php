@@ -389,10 +389,10 @@ final class ColumnExtractor
             $other = $this->columnAt($operand, 0);
 
             if ($other !== null && $other['next'] === count($operand)) {
-                return $this->joinColumns($column, $other, $chain);
+                return $this->joinColumns($column, $other, $chain, $value === '<=>');
             }
 
-            return $this->constant($operand) && $this->equality($column, $chain);
+            return $this->constant($operand) && $this->equality($column, $chain, $value === '<=>');
         }
 
         if ($operator['kind'] === 'operator' && in_array($value, self::RANGE, true)) {
@@ -433,7 +433,7 @@ final class ColumnExtractor
         $located = ['qualifier' => $column['qualifier'], 'column' => $column['column'], 'next' => 0];
 
         return match (true) {
-            in_array($operator['value'], self::EQUALITY, true) => $this->equality($located, $chain),
+            in_array($operator['value'], self::EQUALITY, true) => $this->equality($located, $chain, $operator['value'] === '<=>'),
             in_array($operator['value'], self::RANGE, true) => $this->range($located, $chain),
             default => false,
         };
@@ -442,11 +442,12 @@ final class ColumnExtractor
     /**
      * @param  array{qualifier: ?string, column: string, next: int}  $column
      * @param  list<array<string, ?TableColumns>>  $chain
+     * @param  bool  $nullSafe  whether it is `<=>`, which a NULL matches
      */
-    private function equality(array $column, array $chain): bool
+    private function equality(array $column, array $chain, bool $nullSafe = false): bool
     {
         $reference = $this->resolve($column['qualifier'], $column['column'], $chain);
-        $reference?->addEquality($this->spelled($reference, $column['column']));
+        $reference?->addEquality($this->spelled($reference, $column['column']), nullSafe: $nullSafe);
 
         return true;
     }
@@ -521,8 +522,9 @@ final class ColumnExtractor
      * @param  array{qualifier: ?string, column: string, next: int}  $left
      * @param  array{qualifier: ?string, column: string, next: int}  $right
      * @param  list<array<string, ?TableColumns>>  $chain
+     * @param  bool  $nullSafe  whether it is `<=>`, which a NULL matches
      */
-    private function joinColumns(array $left, array $right, array $chain): bool
+    private function joinColumns(array $left, array $right, array $chain, bool $nullSafe = false): bool
     {
         $leftTable = $this->resolve($left['qualifier'], $left['column'], $chain);
         $rightTable = $this->resolve($right['qualifier'], $right['column'], $chain);
@@ -533,7 +535,7 @@ final class ColumnExtractor
             $table = $leftTable ?? $rightTable;
 
             if ($table !== null && $derived !== null) {
-                $table->addEquality($this->spelled($table, $leftTable === null ? $right['column'] : $left['column']), $derived);
+                $table->addEquality($this->spelled($table, $leftTable === null ? $right['column'] : $left['column']), $derived, $nullSafe);
             }
 
             return true;
@@ -543,7 +545,7 @@ final class ColumnExtractor
             return false;
         }
 
-        $this->join($leftTable, $left['column'], $rightTable, $right['column']);
+        $this->join($leftTable, $left['column'], $rightTable, $right['column'], $nullSafe);
 
         return true;
     }
@@ -564,10 +566,10 @@ final class ColumnExtractor
         return null;
     }
 
-    private function join(TableColumns $left, string $leftColumn, TableColumns $right, string $rightColumn): void
+    private function join(TableColumns $left, string $leftColumn, TableColumns $right, string $rightColumn, bool $nullSafe = false): void
     {
-        $left->addEquality($this->spelled($left, $leftColumn), $right->name);
-        $right->addEquality($this->spelled($right, $rightColumn), $left->name);
+        $left->addEquality($this->spelled($left, $leftColumn), $right->name, $nullSafe);
+        $right->addEquality($this->spelled($right, $rightColumn), $left->name, $nullSafe);
     }
 
     /**

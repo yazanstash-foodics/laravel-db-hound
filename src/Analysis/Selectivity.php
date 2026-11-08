@@ -62,6 +62,21 @@ final readonly class Selectivity
     }
 
     /**
+     * The type of the column when `findsAHandful()` takes it to find only a
+     * handful of rows from its type alone, with no statistics to measure
+     * it: what an engineer should check. Null when statistics decide, or
+     * the type does not make it key-like.
+     */
+    public function handfulAssumedFromType(string $column): ?string
+    {
+        if (($this->cardinality[$column] ?? 0) > 0 || ! $this->findsAHandful($column, 0)) {
+            return null;
+        }
+
+        return trim($this->types[$column] ?? '');
+    }
+
+    /**
      * The columns most distinct values first, those without an estimate
      * last, ties in alphabetical order: the order of equality columns in an
      * index is free, and the same columns always come out in the same order.

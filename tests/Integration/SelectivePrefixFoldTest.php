@@ -58,5 +58,7 @@ it('suggests one index for two lookups sharing a UUID column no index leads, not
     expect(substr_count($report, '### '))->toBe(1)
         ->and($report)->toContain('**Proposed columns (in order):** `subject_id`, `subject_type`, `deleted_at`')
         ->toContain('**Served Fingerprints (2)**')
-        ->toContain('`subject_id` finds only a handful of rows, so its other predicates (`status`, `deleted_at`) are checked on the rows it finds');
+        // No index leads with `subject_id`, so MySQL keeps no statistics on it: its type says it is key-like.
+        ->toContain('`subject_id` finds only a handful of rows (assumed from the column type, `char(36)`, as no index statistics db-hound trusts measure it), '
+            .'so its other predicates (`status`, `deleted_at`) are checked on the rows it finds');
 });

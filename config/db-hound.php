@@ -238,6 +238,12 @@ return [
     | existing index or another query needs another order. It matters only
     | when `min_table_rows` is lowered below it.
     |
+    | A Suggestion is also made when the plan seeks on part of an index and
+    | checks other predicates on the rows it reads (partial index use). A
+    | predicate on one of the `soft_delete_columns` (`deleted_at IS NULL`)
+    | matches nearly every row, so it is never the reason for one: it may
+    | still trail an index suggested for another predicate.
+    |
     */
 
     'analysis' => [
@@ -252,6 +258,7 @@ return [
         'min_table_rows' => (int) env('DB_HOUND_ANALYSIS_MIN_TABLE_ROWS', 1000),
         'low_selectivity_share' => (float) env('DB_HOUND_ANALYSIS_LOW_SELECTIVITY_SHARE', 0.1),
         'min_rows_for_cardinality' => (int) env('DB_HOUND_ANALYSIS_MIN_ROWS_FOR_CARDINALITY', 1000),
+        'soft_delete_columns' => ['deleted_at'],
 
         'ignore' => [
             'tables' => [

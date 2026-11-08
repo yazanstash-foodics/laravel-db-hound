@@ -328,9 +328,11 @@ final class Suggestion
      * first `$fixed` of them (those the other queries need in that order to
      * keep their sort) and those the other queries seek on fixed in their
      * order, so extending an existing index never moves them, and a note
-     * names the other predicates.
+     * names the other predicates, and the column type when only it, not
+     * statistics, says the leading column finds a handful of rows
+     * (`$assumedType`).
      */
-    public function serveThrough(self $other, int $fixed = 1): void
+    public function serveThrough(self $other, int $fixed = 1, ?string $assumedType = null): void
     {
         $leading = $this->columns[0];
 
@@ -347,10 +349,11 @@ final class Suggestion
         $several = count($other->fingerprints) > 1;
 
         $this->flag($other->reasons, sprintf(
-            'also serves %s, which would need `(%s)`: `%s` finds only a handful of rows, so %s other predicates%s are checked on the rows it finds rather than in a second index that leads with it.',
+            'also serves %s, which would need `(%s)`: `%s` finds only a handful of rows%s, so %s other predicates%s are checked on the rows it finds rather than in a second index that leads with it.',
             implode('; ', array_map(fn (string $sql) => '`` '.self::shortened($sql).' ``', $other->fingerprints)),
             implode(', ', $other->columns),
             $leading,
+            $assumedType === null ? '' : ' (assumed from the column type, `'.$assumedType.'`, as no index statistics db-hound trusts measure it)',
             $several ? 'their' : 'its',
             $checked === [] ? '' : ' ('.implode(', ', array_map(fn (string $column) => '`'.$column.'`', $checked)).')',
         ));
