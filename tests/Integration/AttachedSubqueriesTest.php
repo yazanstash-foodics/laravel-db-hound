@@ -33,7 +33,8 @@ beforeEach(function () {
     $types = ['supply', 'loan', 'fee', 'refund'];
     $credits = [];
     for ($i = 1; $i <= 3000; $i++) {
-        $credits[] = ['vendor_id' => 1 + $i % 1500, 'type' => $types[$i % 4]];
+        // 60 credits per vendor, so a vendor's credits are worth an index that also seeks on their type.
+        $credits[] = ['vendor_id' => 1 + $i % 50, 'type' => $types[$i % 4]];
     }
     foreach (array_chunk($credits, 500) as $chunk) {
         DB::table('hound_credits')->insert($chunk);

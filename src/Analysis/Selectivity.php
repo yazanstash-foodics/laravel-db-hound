@@ -55,10 +55,36 @@ final readonly class Selectivity
             return $rows / $cardinality <= self::HANDFUL_OF_ROWS;
         }
 
+        return $this->isKeyLike($column);
+    }
+
+    /**
+     * Whether the column's type makes it a key of another table's rows (or
+     * of this one's): a UUID `char(36)` or `binary(16)`, or an integer
+     * `*_id` foreign key.
+     */
+    public function isKeyLike(string $column): bool
+    {
         $type = strtolower(trim($this->types[$column] ?? ''));
 
         return in_array($type, ['char(36)', 'binary(16)'], true)
             || (str_ends_with(strtolower($column), '_id') && preg_match('/^(smallint|mediumint|int|integer|bigint)(\(\d+\))?( unsigned)?( zerofill)?$/', $type) === 1);
+    }
+
+    /**
+     * The rows of a table of `$rows` rows an equality on every one of
+     * `$columns` finds on average, by the statistics of the one with the
+     * most distinct values (the columns together have at least as many):
+     * an upper bound of that average (a skewed value finds more). Null when
+     * none of them has statistics.
+     *
+     * @param  list<string>  $columns
+     */
+    public function rowsPerKey(array $columns, int $rows): ?float
+    {
+        $distinct = max([0, ...array_map(fn (string $column) => $this->cardinality[$column] ?? 0, $columns)]);
+
+        return $distinct > 0 ? $rows / $distinct : null;
     }
 
     /**

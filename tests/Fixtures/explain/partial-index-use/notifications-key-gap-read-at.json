@@ -1,0 +1,37 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "23.45"
+        },
+        "table": {
+            "table_name": "notifications",
+            "access_type": "ref",
+            "possible_keys": [
+                "notifications_notifiable_lookup_index"
+            ],
+            "key": "notifications_notifiable_lookup_index",
+            "used_key_parts": [
+                "notifiable_id"
+            ],
+            "key_length": "8",
+            "ref": [
+                "const"
+            ],
+            "rows_examined_per_scan": 67,
+            "rows_produced_per_join": 6,
+            "filtered": "10.00",
+            "cost_info": {
+                "read_cost": "16.75",
+                "eval_cost": "0.67",
+                "prefix_cost": "23.45",
+                "data_read_per_join": "14K"
+            },
+            "used_columns": [
+                "notifiable_id",
+                "read_at"
+            ],
+            "attached_condition": "(`db_hound_shapes`.`notifications`.`read_at` is null)"
+        }
+    }
+}

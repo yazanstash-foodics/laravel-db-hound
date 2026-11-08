@@ -1,0 +1,70 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "260.40"
+    },
+    "table": {
+      "table_name": "posts",
+      "access_type": "ALL",
+      "rows_examined_per_scan": 2504,
+      "rows_produced_per_join": 2504,
+      "filtered": "100.00",
+      "cost_info": {
+        "read_cost": "10.00",
+        "eval_cost": "250.40",
+        "prefix_cost": "260.40",
+        "data_read_per_join": "1M"
+      },
+      "used_columns": [
+        "id",
+        "title",
+        "author_id"
+      ],
+      "attached_condition": "(<in_optimizer>(`db_hound_fixtures`.`posts`.`id`,`db_hound_fixtures`.`posts`.`id` in ( <materialize> (/* select#2 */ select `db_hound_fixtures`.`comments`.`post_id` from `db_hound_fixtures`.`comments` where (`db_hound_fixtures`.`comments`.`status` = 'approved') ), <primary_index_lookup>(`db_hound_fixtures`.`posts`.`id` in <temporary table> on <auto_distinct_key> where ((`db_hound_fixtures`.`posts`.`id` = `<materialized_subquery>`.`post_id`))))) or (`db_hound_fixtures`.`posts`.`title` = 't1'))",
+      "attached_subqueries": [
+        {
+          "table": {
+            "table_name": "<materialized_subquery>",
+            "access_type": "eq_ref",
+            "key": "<auto_key>",
+            "key_length": "9",
+            "rows_examined_per_scan": 1,
+            "materialized_from_subquery": {
+              "using_temporary_table": true,
+              "dependent": true,
+              "cacheable": false,
+              "query_block": {
+                "select_id": 2,
+                "cost_info": {
+                  "query_cost": "519.50"
+                },
+                "table": {
+                  "table_name": "comments",
+                  "access_type": "ALL",
+                  "possible_keys": [
+                    "comments_post_id_index"
+                  ],
+                  "rows_examined_per_scan": 5035,
+                  "rows_produced_per_join": 503,
+                  "filtered": "10.00",
+                  "cost_info": {
+                    "read_cost": "469.15",
+                    "eval_cost": "50.35",
+                    "prefix_cost": "519.50",
+                    "data_read_per_join": "51K"
+                  },
+                  "used_columns": [
+                    "post_id",
+                    "status"
+                  ],
+                  "attached_condition": "(`db_hound_fixtures`.`comments`.`status` = 'approved')"
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

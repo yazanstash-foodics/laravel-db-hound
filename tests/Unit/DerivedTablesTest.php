@@ -152,8 +152,9 @@ it('leaves none of the 11 unparsed entries of the v1 staging Report unparsed, sk
             'full scan on `mt942_statement`, but it has only negated predicates (`statement_date`)',
             'full scan on `bank_statements_summary`, but it has only low-selectivity predicates (`merchant_id`)',
         ])->and(suggestedIndexes($result))->toEqualCanonicalizing([
-            // One index serves both review-record subqueries through the key-like `pendable_id` (ticket 024).
+            // The review-record subqueries run once per outer row, so neither is folded into the other's index (ticket 029).
             ['pending_review_records', ['pendable_id', 'pendable_type', 'deleted_at']],
+            ['pending_review_records', ['pendable_id', 'status', 'deleted_at']],
             ['personal_access_tokens', ['tokenable_id', 'tokenable_type', 'last_used_at']],
             ['daily_card_insights', ['merchant_id', 'day']],
             ['orders', ['merchant_id', 'status', 'deleted_at']],

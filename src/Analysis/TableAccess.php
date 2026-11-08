@@ -16,6 +16,7 @@ final readonly class TableAccess
      * @param  bool  $checksRows  whether the plan checks a condition on the rows (or index entries) the access reads, past what it seeks on
      * @param  bool  $sorting  whether a subquery in GROUP BY or ORDER BY reads it
      * @param  list<int>  $union  the part (0 for the first SELECT) of each UNION whose query reads it, outermost first
+     * @param  bool  $dependent  whether a subquery the plan marks dependent reads it: one it runs once per row of the query around it
      */
     public function __construct(
         public string $table,
@@ -30,6 +31,7 @@ final readonly class TableAccess
         public bool $checksRows = false,
         public bool $sorting = false,
         public array $union = [],
+        public bool $dependent = false,
     ) {}
 
     public function isFullScan(): bool

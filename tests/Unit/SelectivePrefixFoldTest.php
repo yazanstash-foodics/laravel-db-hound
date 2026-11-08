@@ -1,8 +1,10 @@
 <?php
 
+use Foodics\DbHound\Analysis\Analyzer;
 use Foodics\DbHound\Analysis\Index;
 use Foodics\DbHound\Analysis\Plan;
 use Foodics\DbHound\Analysis\TableAccess;
+use Illuminate\Encryption\Encrypter;
 
 /**
  * A polymorphic lookup of review records by their UUID subject, as the
@@ -59,7 +61,7 @@ function pendableTables(): array
     ];
 }
 
-it('folds a second index on the same key-like leading column into the one with more impact, with a note (staging 71a756f7)', function () {
+it('keeps apart the index of a withCount on the same key-like leading column as an outer lookup: it runs once per transaction (staging 71a756f7)', function () {
     $result = analyzeWithCardinality(
         [
             PENDABLE_LOOKUP => new Plan([new TableAccess('pending_review_records', 'ALL', null, 80_000)]),
@@ -72,11 +74,28 @@ it('folds a second index on the same key-like leading column into the one with m
     $suggestions = array_values(array_filter($result->suggestions, fn ($suggestion) => $suggestion->table === 'pending_review_records'));
 
     expect(unsuggested($result))->toBe([])
-        ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->fingerprints], $suggestions))
-        ->toBe([[['pendable_id', 'pendable_type', 'deleted_at'], [PENDABLE_LOOKUP, PENDABLE_COUNT]]])
-        ->and($suggestions[0]->impact())->toEqualWithDelta(116.04, 0.001)
-        ->and($suggestions[0]->notes)->toBe([
-            'also serves `` '.mb_substr(PENDABLE_COUNT, 0, 200).'… ``, which would need `(pendable_id, status, deleted_at)`: '
+        ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->fingerprints, $suggestion->notes], $suggestions))->toBe([
+            [['pendable_id', 'pendable_type', 'deleted_at'], [PENDABLE_LOOKUP], []],
+            [['pendable_id', 'status', 'deleted_at'], [PENDABLE_COUNT], []],
+        ]);
+});
+
+it('folds a second index on the same key-like leading column into the one with more impact, with a note', function () {
+    $byStatus = 'select count(*) as `aggregate` from `pending_review_records` where `pendable_id` = ? and `status` = ? and `pending_review_records`.`deleted_at` is null';
+    $scan = new Plan([new TableAccess('pending_review_records', 'ALL', null, 80_000)]);
+
+    $result = analyzeWithCardinality(
+        [PENDABLE_LOOKUP => $scan, $byStatus => $scan],
+        pendableTables(),
+        stats: [PENDABLE_LOOKUP => [23, 108.52, 50.17], $byStatus => [1, 7.52, 7.52]],
+    );
+
+    expect(unsuggested($result))->toBe([])
+        ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->fingerprints], $result->suggestions))
+        ->toBe([[['pendable_id', 'pendable_type', 'deleted_at'], [PENDABLE_LOOKUP, $byStatus]]])
+        ->and($result->suggestions[0]->impact())->toEqualWithDelta(116.04, 0.001)
+        ->and($result->suggestions[0]->notes)->toBe([
+            'also serves `` '.$byStatus.' ``, which would need `(pendable_id, status, deleted_at)`: '
             .'`pendable_id` finds only a handful of rows (assumed from the column type, `char(36)`, as no index statistics db-hound trusts measure it), '
             .'so its other predicates (`status`, `deleted_at`) are checked on the rows it finds '
             .'rather than in a second index that leads with it.',
@@ -293,4 +312,113 @@ it('says when it assumed from the column type that the shared leading column fin
     // Statistics on a table this small say nothing about a column.
     'a UUID on a table too small to trust its statistics' => ['reference', ordersOf(900, ['reference' => 900]),
         '`reference` finds only a handful of rows (assumed from the column type, `char(36)`, as no index statistics db-hound trusts measure it)'],
+]);
+
+/**
+ * An `adjustments` table of 1,000,000 rows with no index statistics, so its
+ * integer `merchant_id` is taken to find only a handful of rows, and the
+ * `merchants` it belongs to, which the plans below read through an index.
+ *
+ * @return array<string, array{rows: int, columns: array<string, string>, indexes?: list<Index>}>
+ */
+function merchantAdjustments(): array
+{
+    return [
+        'adjustments' => [
+            'rows' => 1_000_000,
+            'columns' => [
+                'id' => 'bigint unsigned', 'merchant_id' => 'bigint unsigned', 'type' => 'varchar(20)', 'is_approved' => 'tinyint(1)',
+                'eligible_at' => 'timestamp',
+            ],
+        ],
+        'merchants' => [
+            'rows' => 5_000,
+            'columns' => ['id' => 'bigint unsigned', 'name' => 'varchar(100)', 'created_at' => 'timestamp'],
+            'indexes' => [new Index('merchants_created_at_index', ['created_at'], false)],
+        ],
+    ];
+}
+
+it('does not fold the index of a subquery the plan runs once per outer row into one sharing its key-like leading column', function (string $dependent, TableAccess $access) {
+    $outer = 'select * from `adjustments` where `merchant_id` = ? and `eligible_at` > ?';
+    $plans = [
+        $outer => new Plan([new TableAccess('adjustments', 'ALL', null, 1_000_000)]),
+        $dependent => new Plan([new TableAccess('merchants', 'range', 'merchants_created_at_index', 500, usedKeyParts: ['created_at']), $access]),
+    ];
+
+    $suggested = foldedIndexes($plans, merchantAdjustments(), [$outer => [10, 900.0, 200.0], $dependent => [10, 100.0, 50.0]]);
+
+    // Each merchant read would read every adjustment of the merchant to check the other predicates.
+    expect($suggested)->toBe([
+        [['merchant_id', 'eligible_at'], [$outer]],
+        [['merchant_id', 'type'], [$dependent]],
+    ]);
+})->with([
+    'a withCount in the SELECT list' => [
+        'select `merchants`.*, (select count(*) from `adjustments` where `merchants`.`id` = `adjustments`.`merchant_id` and `type` = ?) as `adjustments_count` from `merchants` where `created_at` > ?',
+        new TableAccess('adjustments', 'ALL', null, 1_000_000, selectList: true, dependent: true),
+    ],
+    'an EXISTS attached to the outer table' => [
+        'select * from `merchants` where `created_at` > ? and (exists (select * from `adjustments` where `merchants`.`id` = `adjustments`.`merchant_id` and `type` = ?) or `name` = ?)',
+        new TableAccess('adjustments', 'ALL', null, 1_000_000, dependent: true),
+    ],
+]);
+
+it('still folds into an index that also serves a subquery the plan runs once per outer row, by its leading columns alone', function () {
+    $eligible = 'select * from `adjustments` where `merchant_id` = ? and `eligible_at` > ?';
+    $typed = 'select * from `adjustments` where `merchant_id` = ? and `type` = ?';
+    $counted = 'select `merchants`.*, (select count(*) from `adjustments` where `merchants`.`id` = `adjustments`.`merchant_id`) as `adjustments_count` from `merchants` where `created_at` > ?';
+    $scan = new Plan([new TableAccess('adjustments', 'ALL', null, 1_000_000)]);
+    $plans = [
+        $eligible => $scan,
+        $typed => $scan,
+        $counted => new Plan([
+            new TableAccess('merchants', 'range', 'merchants_created_at_index', 500, usedKeyParts: ['created_at']),
+            new TableAccess('adjustments', 'ALL', null, 1_000_000, selectList: true, dependent: true),
+        ]),
+    ];
+
+    $suggested = foldedIndexes($plans, merchantAdjustments(), [$eligible => [10, 900.0, 200.0], $typed => [10, 100.0, 50.0], $counted => [10, 50.0, 20.0]]);
+
+    // The withCount seeks on `merchant_id` alone, which the index on `(merchant_id, eligible_at)` serves as it is.
+    expect(array_map(fn (array $suggestion) => [$suggestion[0], array_values(array_diff($suggestion[1], [$counted]))], $suggested))->toBe([
+        [['merchant_id', 'eligible_at'], [$eligible, $typed]],
+    ])->and(in_array($counted, $suggested[0][1], true))->toBeTrue();
+});
+
+it('does not fold a query whose range the kept index would put after a column the query leaves unconstrained', function (string $other, array $expected) {
+    // The plan seeks on `merchant_id` and checks `deleted_at IS NULL` and the range on the rows: with `deleted_at` no
+    // soft-delete column here, the index keeps it ahead of the range.
+    $kept = 'select * from `transactions` where `merchant_id` = ? and `transactions`.`deleted_at` is null and `transaction_date` between ? and ?';
+    $plans = [
+        $kept => new Plan([new TableAccess('transactions', 'ref', 'transactions_merchant_id_index', 2_000, usedKeyParts: ['merchant_id'], checksRows: true)]),
+        $other => new Plan([new TableAccess('transactions', 'ALL', null, 1_000_000)]),
+    ];
+
+    $result = analyzeWithCardinality(
+        $plans,
+        ['transactions' => [
+            'rows' => 1_000_000,
+            'columns' => [
+                'id' => 'bigint unsigned', 'merchant_id' => 'bigint unsigned', 'status' => 'varchar(20)', 'transaction_date' => 'datetime',
+                'archived_at' => 'timestamp', 'deleted_at' => 'timestamp',
+            ],
+            'indexes' => [new Index('transactions_merchant_id_index', ['merchant_id'], false)],
+        ]],
+        new Analyzer(new Encrypter(str_repeat('k', 32), 'aes-256-cbc'), qualification: everyFingerprint(), softDeleteColumns: ['archived_at']),
+        [$kept => [10, 900.0, 200.0], $other => [10, 100.0, 50.0]],
+    );
+
+    expect(unsuggested($result))->toBe([])
+        ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->fingerprints], $result->suggestions))
+        ->toBe(array_map(fn (array $suggestion) => [$suggestion[0], array_map(fn (string $sql) => $sql === 'kept' ? $kept : $other, $suggestion[1])], $expected));
+})->with([
+    // Through `(merchant_id, deleted_at, transaction_date)` it would read every transaction of the merchant.
+    'no predicate on the column between' => ['select * from `transactions` where `merchant_id` = ? and `transaction_date` < ?', [
+        [['merchant_id', 'deleted_at', 'transaction_date'], ['kept']],
+        [['merchant_id', 'transaction_date'], ['other']],
+    ]],
+    'pinning the column between' => ['select * from `transactions` where `merchant_id` = ? and `status` = ? and `transactions`.`deleted_at` is null and `transaction_date` < ?', [
+        [['merchant_id', 'deleted_at', 'transaction_date'], ['kept', 'other']],
+    ]],
 ]);

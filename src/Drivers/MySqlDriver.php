@@ -430,9 +430,12 @@ final class MySqlDriver implements Driver
      * @param  bool  $selectList  whether the node is part of a subquery in the SELECT list
      * @param  bool  $sorting  whether the node is part of a subquery in GROUP BY or ORDER BY
      * @param  list<int>  $union  the part of each UNION the node is part of, outermost first
+     * @param  bool  $dependent  whether the node is part of a subquery the plan marks dependent (run once per outer row)
      */
-    private static function walk(array $node, array &$accesses, bool &$filesort, bool &$temporary, array $within = [], bool $selectList = false, bool $sorting = false, array $union = []): void
+    private static function walk(array $node, array &$accesses, bool &$filesort, bool &$temporary, array $within = [], bool $selectList = false, bool $sorting = false, array $union = [], bool $dependent = false): void
     {
+        $dependent = $dependent || ($node['dependent'] ?? false) === true;
+
         if (($node['using_filesort'] ?? false) === true) {
             $filesort = true;
         }
@@ -461,6 +464,7 @@ final class MySqlDriver implements Driver
                 checksRows: isset($node['attached_condition']) || isset($node['index_condition']),
                 sorting: $sorting,
                 union: $union,
+                dependent: $dependent,
             );
         }
 
@@ -473,18 +477,24 @@ final class MySqlDriver implements Driver
             $nestedSelectList = $selectList || $key === 'select_list_subqueries';
             $nestedSorting = $sorting || $key === 'order_by_subqueries' || $key === 'group_by_subqueries';
 
+            // MySQL marks dependent a subquery it materializes once (`<materialized_subquery>`, a semijoin's `<subqueryN>`),
+            // which it does not run per outer row; a LATERAL derived table it does rematerialize per outer row.
+            if ($key === 'materialized_from_subquery' && $table !== null && ($table === '<materialized_subquery>' || str_starts_with($table, '<subquery'))) {
+                unset($child['dependent']);
+            }
+
             // Each SELECT of a UNION, in the order the statement lists them.
             if ($key === 'query_specifications' && array_is_list($child)) {
                 foreach ($child as $part => $specification) {
                     if (is_array($specification)) {
-                        self::walk($specification, $accesses, $filesort, $temporary, $nestedWithin, $nestedSelectList, $nestedSorting, [...$union, $part]);
+                        self::walk($specification, $accesses, $filesort, $temporary, $nestedWithin, $nestedSelectList, $nestedSorting, [...$union, $part], $dependent);
                     }
                 }
 
                 continue;
             }
 
-            self::walk($child, $accesses, $filesort, $temporary, $nestedWithin, $nestedSelectList, $nestedSorting, $union);
+            self::walk($child, $accesses, $filesort, $temporary, $nestedWithin, $nestedSelectList, $nestedSorting, $union, $dependent);
         }
     }
 }

@@ -182,15 +182,44 @@ final readonly class TableDemand
 
         // Weak filters alone are worth only extending the index the access seeks on in full, after the columns it seeks on:
         // anywhere else they make a second index on the same leading columns that barely narrows the read.
+        // An IS NULL past a key gap after a key is the exception: the index cannot be extended to seek on it.
         if ($unused !== [] && array_diff($unused, $candidate->order->optional) === []) {
             $index = $this->accessIndex();
 
-            if ($index === null || array_diff($index->columns, $used) !== [] || $candidate->order->startingWith(ColumnOrder::fixed($used)) === null) {
+            if ($index === null || $candidate->order->startingWith(ColumnOrder::fixed($used)) === null
+                || (array_diff($index->columns, $used) !== [] && ! $this->nullsPastKeyGap($index, $used, $unused))) {
                 return [];
             }
         }
 
         return $unused;
+    }
+
+    /**
+     * Whether the weak filters the plan checks on the rows (`$unused`) are
+     * all `IS NULL` predicates (such as `read_at IS NULL`, the unread
+     * notifications of a notifiable) past a key gap: the access seeks on a
+     * key-like column (`Selectivity::isKeyLike()`) among `$used`, and the
+     * query leaves the next part of `$index` unconstrained, so that index
+     * cannot seek on them, even extended. A key may have many rows of which
+     * the `IS NULL` matches few: an index on the key and the `IS NULL` reads
+     * only those.
+     *
+     * @param  list<string>  $used
+     * @param  list<string>  $unused
+     */
+    private function nullsPastKeyGap(Index $index, array $used, array $unused): bool
+    {
+        $next = $index->columns[count($used)] ?? null;
+        $reference = $this->reference;
+        $constrained = [
+            ...array_column($reference->equalities, 'column'), ...$reference->lists, ...$reference->ranges, ...$reference->nulls,
+            ...$reference->notNulls, ...$reference->negated, ...$reference->sort,
+        ];
+
+        return $next !== null && $next !== '' && ! in_array($next, $constrained, true)
+            && array_diff($unused, $reference->nulls) === []
+            && array_filter($used, $this->selectivity->isKeyLike(...)) !== [];
     }
 
     /**
@@ -205,14 +234,7 @@ final readonly class TableDemand
      */
     private function seeksSingleRows(array $used): bool
     {
-        $pinned = $this->reference->lists;
-
-        // A join column pins the seek only once the table it joins is read.
-        foreach ($this->reference->equalities as ['column' => $column, 'joinedTo' => $joinedTo]) {
-            if ($joinedTo === null || in_array($joinedTo, $this->readBefore, true)) {
-                $pinned[] = $column;
-            }
-        }
+        $pinned = $this->pinned();
 
         foreach ($this->indexes as $index) {
             // `<=>` finds every NULL of a column a unique index allows several of; the primary key has none.
@@ -228,6 +250,100 @@ final readonly class TableDemand
     }
 
     /**
+     * The columns an equality or an `IN` list pins: a join equality only
+     * once the table it joins is read.
+     *
+     * @return list<string>
+     */
+    private function pinned(): array
+    {
+        $pinned = $this->reference->lists;
+
+        foreach ($this->reference->equalities as ['column' => $column, 'joinedTo' => $joinedTo]) {
+            if ($joinedTo === null || in_array($joinedTo, $this->readBefore, true)) {
+                $pinned[] = $column;
+            }
+        }
+
+        return $pinned;
+    }
+
+    /**
+     * The rows each seek of the access finds, when MySQL's statistics (on a
+     * table large enough to trust them) say it is fewer than twice a handful
+     * (`Selectivity::HANDFUL_OF_ROWS`) on average, and the plan's own
+     * estimate of the rows it examines (for the values it was explained
+     * with) agrees: checking the other predicates on so few rows is cheap,
+     * so an index that also seeks on them is not worth its writes. The
+     * larger of the two. Only when an equality or an `IN` list pins every
+     * column the access seeks on: a range finds many keys, and a null-safe
+     * `<=>` every NULL, which statistics do not count. Null otherwise.
+     */
+    public function fewRowsPerSeek(): ?float
+    {
+        $used = $this->access->usedKeyParts;
+
+        if ($used === null || $used === [] || array_diff($used, array_diff($this->pinned(), $this->reference->nullSafe)) !== []) {
+            return null;
+        }
+
+        $average = $this->selectivity->rowsPerKey($used, $this->rowCount);
+
+        if ($average === null) {
+            return null;
+        }
+
+        // An average hides a skewed key: the plan's own estimate for the key it was explained for must agree.
+        $rows = max($average, (float) ($this->access->rowsExamined ?? 0));
+
+        return $rows < Selectivity::HANDFUL_OF_ROWS * 2 ? $rows : null;
+    }
+
+    /**
+     * Whether an index on `$columns` (the primary key InnoDB appends to
+     * them included) has the range the index the query needs
+     * (`$candidate`) seeks on, but after a column the query neither pins
+     * with an equality, an `IS NULL` or an `IN` list (a key gap): it would
+     * no longer seek on it, reading every row of the columns before.
+     *
+     * @param  list<string>  $columns
+     */
+    public function rangeAfterGap(?IndexCandidate $candidate, array $columns): bool
+    {
+        if ($candidate === null) {
+            return false;
+        }
+
+        // A join equality pins a column only once the table it joins is read: the candidate has only those.
+        $equalities = array_intersect(array_column($this->reference->equalities, 'column'), $candidate->columns);
+        $pinned = [...$equalities, ...$this->reference->nulls, ...$this->reference->lists];
+
+        foreach ($this->seekRanges($candidate) as $range) {
+            $at = array_search($range, $columns, true);
+
+            if ($at !== false && array_diff(array_slice($columns, 0, $at), $pinned) !== []) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The range columns (`<`, `BETWEEN`, `LIKE`, `IS NOT NULL`) the index
+     * the query needs (`$candidate`) seeks on.
+     *
+     * @return list<string>
+     */
+    private function seekRanges(?IndexCandidate $candidate): array
+    {
+        $reference = $this->reference;
+        $ranges = array_diff([...$reference->ranges, ...$reference->notNulls], array_column($reference->equalities, 'column'), $reference->nulls, $reference->lists);
+
+        return $candidate === null ? [] : array_values(array_intersect($candidate->columns, $ranges));
+    }
+
+    /**
      * How many of the first of `$columns` (the primary key InnoDB appends
      * to them included) an index on them must keep in that order to serve
      * the query through its `$leading` column, given the index the query
@@ -235,7 +351,9 @@ final readonly class TableDemand
      * that column with an equality its own index leads with, and keep the
      * order its own index returns rows in: the sort columns come right after
      * the columns of `$columns` the query pins with an equality, and the
-     * index must keep them all there. Otherwise only `$leading`.
+     * index must keep them all there. A range its own index seeks on must
+     * not come after a key gap (`rangeAfterGap()`), and the index keeps the
+     * columns up to it. Otherwise only `$leading`.
      *
      * @param  list<string>  $columns
      */
@@ -253,11 +371,23 @@ final readonly class TableDemand
         }
 
         $pinned = [...$equalities, ...$reference->nulls];
+        $fixed = 1;
+
+        if ($this->rangeAfterGap($candidate, $columns)) {
+            return null;
+        }
+
+        // The index seeks on the range it has: it must stay where it is.
+        foreach ($this->seekRanges($candidate) as $range) {
+            $at = array_search($range, $columns, true);
+            $fixed = $at === false ? $fixed : max($fixed, $at + 1);
+        }
+
         $sort = $this->drives ? array_values(array_diff($reference->sort, $pinned)) : [];
 
         // An index that does not serve the sort has no order to keep.
         if ($sort === [] || array_diff($sort, $candidate->columns) !== []) {
-            return 1;
+            return $fixed;
         }
 
         $at = 0;
@@ -266,7 +396,7 @@ final readonly class TableDemand
             $at++;
         }
 
-        return array_slice($columns, $at, count($sort)) === $sort ? max(1, $at + count($sort)) : null;
+        return array_slice($columns, $at, count($sort)) === $sort ? max($fixed, $at + count($sort)) : null;
     }
 
     /**

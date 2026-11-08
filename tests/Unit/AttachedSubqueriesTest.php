@@ -50,9 +50,10 @@ function subqueryShapes(): array
         'merchants' => ['rows' => 2_000, 'columns' => ['id' => 'bigint unsigned', 'name' => 'varchar(100)', 'supply' => 'json', 'created_at' => 'timestamp', 'deleted_at' => 'timestamp'], 'indexes' => [
             new Index('merchants_created_at_index', ['created_at'], false),
         ]],
+        // 60 adjustments per merchant: enough for an index that also seeks on their type to be worth it.
         'adjustments' => ['rows' => 3_000, 'columns' => ['id' => 'bigint unsigned', 'merchant_id' => 'bigint unsigned', 'type' => 'varchar(20)', 'is_approved' => 'tinyint(1)'], 'indexes' => [
             new Index('adjustments_merchant_id_index', ['merchant_id'], false), new Index('adjustments_type_index', ['type'], false),
-        ], 'cardinality' => ['merchant_id' => 2_000, 'type' => 4]],
+        ], 'cardinality' => ['merchant_id' => 50, 'type' => 4]],
         'comments' => ['rows' => 5_000, 'columns' => ['id' => 'bigint unsigned', 'post_id' => 'bigint unsigned', 'status' => 'varchar(20)'], 'cardinality' => ['post_id' => 3_000, 'status' => 5]],
         'votes' => ['rows' => 5_000, 'columns' => ['id' => 'bigint unsigned', 'comment_id' => 'bigint unsigned', 'kind' => 'varchar(20)'], 'cardinality' => ['comment_id' => 5_000, 'kind' => 3]],
     ];
@@ -210,3 +211,15 @@ it('reports a plan too deep to read as an EXPLAIN failure without an SQLSTATE', 
 
     expect(unparsedReasons($result))->toBe(['EXPLAIN failed (JsonException)']);
 });
+
+it('marks dependent only the tables of a subquery MySQL runs once per row of the query around it', function (string $plan, array $dependent) {
+    $plan = MySqlDriver::planFromJson((string) file_get_contents(__DIR__.'/../Fixtures/explain/'.$plan.'.json'));
+
+    expect(array_map(fn ($access) => [$access->table, $access->dependent], $plan->accesses))->toBe($dependent);
+})->with([
+    // `posts.id IN (subquery) OR …`: MySQL materializes the subquery once and looks each post up in it, though it marks it dependent.
+    'an IN subquery materialized once' => ['subqueries/materialized-in-or', [['posts', false], ['<materialized_subquery>', false], ['comments', false]]],
+    // A whereHas semijoin materialized once, and a withCount run per post.
+    'a withCount next to a whereHas' => ['where-has-with-count', [['<subquery3>', false], ['comments', false], ['posts', false], ['comments', true]]],
+    'an EXISTS ORed with a predicate on the table around it' => ['subqueries/or-exists', [['merchants', false], ['adjustments', true]]],
+]);

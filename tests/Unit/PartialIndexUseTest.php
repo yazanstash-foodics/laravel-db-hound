@@ -541,3 +541,127 @@ it('still suggests seeking on the rows a null-safe equality on a unique key chec
     expect(unsuggested($result))->toBe([])
         ->and(partialSuggestions($result))->toBe([[['code', 'merchant_id'], null, [Analyzer::REASON_PARTIAL_INDEX_USE]]]);
 });
+
+/**
+ * A `branches` table of 100,000 rows with an index on `merchant_id` alone,
+ * whose statistics give `$merchants` merchants (none when null).
+ *
+ * @return array<string, array{rows: int, columns: array<string, string>, indexes: list<Index>, cardinality: array<string, int>}>
+ */
+function branchesOf(?int $merchants): array
+{
+    return ['branches' => [
+        'rows' => 100_000,
+        'columns' => [
+            'id' => 'bigint unsigned', 'merchant_id' => 'bigint unsigned', 'name' => 'varchar(100)', 'is_active' => 'tinyint(1)', 'created_at' => 'timestamp',
+        ],
+        'indexes' => [new Index('branches_merchant_id_index', ['merchant_id'], false)],
+        'cardinality' => $merchants === null ? [] : ['id' => 100_000, 'merchant_id' => $merchants],
+    ]];
+}
+
+it('extends a foreign key index by a flag the plan checks on the rows only when each key finds enough rows for it to matter', function (?int $merchants, array $suggested, array $skipped, int $perSeek = 3) {
+    $sql = 'select * from `branches` where `branches`.`merchant_id` = ? and `is_active` = ?';
+    $plan = new Plan([new TableAccess('branches', 'ref', 'branches_merchant_id_index', $perSeek, usedKeyParts: ['merchant_id'], checksRows: true)]);
+
+    $result = analyzeWithCardinality([$sql => $plan], branchesOf($merchants));
+
+    expect(partialSuggestions($result))->toBe($suggested)
+        ->and($result->unparsed)->toBe([])
+        ->and(skippedReasons($result))->toBe($skipped);
+})->with([
+    // Three branches per merchant: checking `is_active` on them is cheap.
+    'few rows per key' => [33_333, [], [
+        'partial index use on `branches`, but `branches_merchant_id_index` finds ~3 rows per key (`merchant_id`), so checking the other predicates (`is_active`) on the rows it finds is cheap',
+    ]],
+    // 100,000 / 5,070 = 19.72: under twice a handful, and said so.
+    'just under twice a handful of rows per key' => [5_070, [], [
+        'partial index use on `branches`, but `branches_merchant_id_index` finds ~19 rows per key (`merchant_id`), so checking the other predicates (`is_active`) on the rows it finds is cheap',
+    ]],
+    'many rows per key' => [200, [[['merchant_id', 'is_active'], 'branches_merchant_id_index', [Analyzer::REASON_PARTIAL_INDEX_USE]]], []],
+    'no statistics' => [null, [[['merchant_id', 'is_active'], 'branches_merchant_id_index', [Analyzer::REASON_PARTIAL_INDEX_USE]]], []],
+    // A few large merchants among many small ones: the merchant the plan was explained for has many more rows than the average.
+    'few rows per key on average, but many for the explained key' => [33_333, [[['merchant_id', 'is_active'], 'branches_merchant_id_index', [Analyzer::REASON_PARTIAL_INDEX_USE]]], [], 50_000],
+    'few rows per key on average, and somewhat more for the explained key' => [33_333, [], [
+        'partial index use on `branches`, but `branches_merchant_id_index` finds ~12 rows per key (`merchant_id`), so checking the other predicates (`is_active`) on the rows it finds is cheap',
+    ], 12],
+]);
+
+it('does not extend a foreign key index by a flag the plan checks on the rows to sort them when each key finds only a few (staging d99bffc1)', function (?int $merchants, bool $temporary, array $suggested, array $skipped) {
+    $sql = 'select * from `branches` where `branches`.`merchant_id` = ? and `is_active` = ? order by `created_at` asc, `id` asc';
+    $plan = new Plan(
+        [new TableAccess('branches', 'ref', 'branches_merchant_id_index', 3, usedKeyParts: ['merchant_id'], checksRows: true)],
+        usingFilesort: true,
+        usingTemporary: $temporary,
+    );
+
+    $result = analyzeWithCardinality([$sql => $plan], branchesOf($merchants));
+
+    expect(partialSuggestions($result))->toBe($suggested)
+        ->and($result->unparsed)->toBe([])
+        ->and(skippedReasons($result))->toBe($skipped);
+})->with([
+    // Sorting three branches is as cheap as checking `is_active` on them.
+    'few rows per key' => [33_333, false, [], [
+        'filesort, partial index use on `branches`, but `branches_merchant_id_index` finds ~3 rows per key (`merchant_id`), so checking the other predicates (`is_active`) on the rows it finds, and sorting them, is cheap',
+    ]],
+    'many rows per key' => [200, false, [
+        [['merchant_id', 'is_active', 'created_at'], 'branches_merchant_id_index', [Analyzer::REASON_FILESORT, Analyzer::REASON_PARTIAL_INDEX_USE]],
+    ], []],
+    // A temporary table may hold more rows than the access finds: its sort keeps the usual demand, without the flag checked on the rows.
+    'few rows per key, sorted in a temporary table' => [33_333, true, [
+        [['merchant_id', 'is_active', 'created_at'], 'branches_merchant_id_index', [Analyzer::REASON_FILESORT, Analyzer::REASON_TEMPORARY]],
+    ], []],
+]);
+
+/**
+ * A `notifications` table of 20,000 rows over 300 notifiables whose
+ * lookup index puts `notifiable_type` between `notifiable_id` and the rest.
+ *
+ * @return array<string, array{rows: int, columns: array<string, string>, indexes: list<Index>, cardinality: array<string, int>}>
+ */
+function notificationsWithLookupIndex(): array
+{
+    return ['notifications' => [
+        'rows' => 20_000,
+        'columns' => [
+            'id' => 'char(36)', 'type' => 'varchar(255)', 'notifiable_type' => 'varchar(255)', 'notifiable_id' => 'bigint unsigned',
+            'data' => 'text', 'read_at' => 'timestamp', 'created_at' => 'timestamp', 'deleted_at' => 'timestamp',
+        ],
+        'indexes' => [
+            new Index('notifications_notifiable_lookup_index', ['notifiable_id', 'notifiable_type', 'type', 'created_at'], false),
+            new Index('notifications_notifiable_type_notifiable_id_index', ['notifiable_type', 'notifiable_id'], false),
+        ],
+        'cardinality' => ['id' => 20_000, 'notifiable_id' => 300, 'notifiable_type' => 2],
+    ]];
+}
+
+it('suggests seeking on a weak IS NULL the plan checks on the rows when a key gap stops the access after a key-like column (staging 785e83a1)', function (string $sql, string $plan, array $suggested) {
+    $result = analyzeWithCardinality([$sql => partialIndexPlan($plan)], notificationsWithLookupIndex());
+
+    expect(unsuggested($result))->toBe([])
+        ->and(partialSuggestions($result))->toBe($suggested);
+})->with([
+    'unread' => [
+        'select count(*) as `aggregate` from `notifications` where `notifiable_id` = ? and `read_at` is null',
+        'notifications-key-gap-read-at',
+        [[['notifiable_id', 'read_at'], null, [Analyzer::REASON_PARTIAL_INDEX_USE]]],
+    ],
+    // A soft-delete column matches nearly every row.
+    'not deleted' => [
+        'select count(*) as `aggregate` from `notifications` where `notifiable_id` = ? and `deleted_at` is null',
+        'notifications-key-gap-deleted-at',
+        [],
+    ],
+]);
+
+it('does not suggest seeking on a weak IS NULL past a key gap after a column that is no key', function () {
+    $sql = 'select count(*) as `aggregate` from `notifications` where `notifiable_id` = ? and `read_at` is null';
+    $tables = notificationsWithLookupIndex();
+    $tables['notifications']['columns']['notifiable_id'] = 'varchar(255)';
+
+    $result = analyzeWithCardinality([$sql => partialIndexPlan('notifications-key-gap-read-at')], $tables);
+
+    expect($result->suggestions)->toBe([])
+        ->and(unsuggested($result))->toBe([]);
+});

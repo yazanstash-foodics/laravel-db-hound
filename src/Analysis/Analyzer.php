@@ -614,7 +614,11 @@ final class Analyzer
      * ties by their columns; each folds into the first kept one whose index
      * serves it, or, when that one leads with the same column and only its
      * own index serves both (the other's would lose an order), that one
-     * into it.
+     * into it. One serving a subquery the plan runs once per outer row
+     * (dependent) is never folded, and none folds into one that serves only
+     * such subqueries. Two stay apart whichever has more impact when the
+     * kept index has the range the other's queries seek on past a column
+     * they leave unconstrained (a key gap).
      *
      * @param  list<Suggestion>  $suggestions  consolidated
      * @param  array<int, list<int>>  $members  Suggestion object id => its demands
@@ -625,6 +629,29 @@ final class Analyzer
     private function foldOnSelectiveLead(array $suggestions, array &$members, array $demands, array $candidates): array
     {
         usort($suggestions, fn (Suggestion $a, Suggestion $b) => [$b->impact(), implode(',', $a->columns)] <=> [$a->impact(), implode(',', $b->columns)]);
+
+        // Whether a subquery the plan runs once per outer row (dependent) is among the queries of `$suggestion`, or all of them.
+        $dependent = function (Suggestion $suggestion, bool $all) use (&$members, $demands): bool {
+            $runs = array_map(fn (int $demand) => $demands[$demand]->access->dependent, $members[spl_object_id($suggestion)]);
+
+            return $all ? ! in_array(false, $runs, true) : in_array(true, $runs, true);
+        };
+
+        // Whether `$folded` may be folded into `$into`'s index: no dependent subquery's, which would read the rows the column
+        // finds that many times, and into one an outer query needs (a dependent subquery's alone is no index to fold into).
+        $foldable = fn (Suggestion $into, Suggestion $folded): bool => ! $dependent($folded, false) && ! $dependent($into, true);
+
+        // Whether `$folded` must never be folded into `$into`, nor `$into` into it in its place: the two stay apart.
+        $apart = function (Suggestion $into, Suggestion $folded) use (&$members, $demands, $candidates): bool {
+            foreach ($members[spl_object_id($folded)] as $demand) {
+                // Past a column its query leaves unconstrained, `$into`'s index would not seek on its range.
+                if ($demands[$demand]->rangeAfterGap($candidates[$demand], $into->primaryKey->appendedTo($into->columns))) {
+                    return true;
+                }
+            }
+
+            return false;
+        };
 
         // How many of the first columns of `$into` it must keep in their order to serve `$folded`'s queries; null when it cannot.
         $serves = function (Suggestion $into, Suggestion $folded) use (&$members, $demands, $candidates): ?int {
@@ -665,14 +692,18 @@ final class Analyzer
 
         foreach ($suggestions as $suggestion) {
             foreach ($kept as $at => $into) {
-                if (($fixed = $serves($into, $suggestion)) !== null) {
+                if ($into->connection !== $suggestion->connection || $into->table !== $suggestion->table || $apart($into, $suggestion)) {
+                    continue;
+                }
+
+                if ($foldable($into, $suggestion) && ($fixed = $serves($into, $suggestion)) !== null) {
                     $join($into, $suggestion, $fixed);
 
                     continue 2;
                 }
 
                 // Only to keep the folded queries' order: the one with more impact leads with the same column.
-                if ($suggestion->columns[0] === $into->columns[0] && ($fixed = $serves($suggestion, $into)) !== null) {
+                if ($suggestion->columns[0] === $into->columns[0] && $foldable($suggestion, $into) && ($fixed = $serves($suggestion, $into)) !== null) {
                     $join($suggestion, $into, $fixed);
                     $kept[$at] = $suggestion;
 
@@ -811,11 +842,28 @@ final class Analyzer
             }
 
             $pastKey = [];
+            // The rows each seek finds and the predicates the plan checks on them, when too few rows for an index on those to be worth it.
+            $fewRows = null;
+            // Whether the plan sorts only those few rows.
+            $sortsFewRows = false;
 
             // Only a table of the default database is inspected (see below).
             if ($reference->database === null && $access->checksRowsPastKey()) {
                 try {
-                    $pastKey = $this->demand($query, $access, $plan, $reasons, $reference, $before, $position === $driving, $driver)->predicatesPastKey();
+                    $partial = $this->demand($query, $access, $plan, $reasons, $reference, $before, $position === $driving, $driver);
+                    $pastKey = $partial->predicatesPastKey();
+                    $perSeek = $pastKey === [] ? null : $partial->fewRowsPerSeek();
+
+                    if ($perSeek !== null) {
+                        [$fewRows, $pastKey] = [[$perSeek, $pastKey], []];
+
+                        // A filesort of the table the plan drives the join from sorts the rows it finds, before any join: as cheap.
+                        // A temporary table may hold more rows than it finds: its sort keeps the usual demand.
+                        if (in_array(self::REASON_FILESORT, $reasons, true) && ! $plan->usingTemporary) {
+                            $reasons = array_values(array_diff($reasons, [self::REASON_FILESORT]));
+                            $sortsFewRows = true;
+                        }
+                    }
                 } catch (Throwable) {
                     // A table that cannot be inspected shows no partial index use: the lookup failing must not drop what the other tables need.
                 }
@@ -826,6 +874,29 @@ final class Analyzer
             }
 
             if ($reasons === []) {
+                if ($fewRows === null) {
+                    continue;
+                }
+
+                if ($this->allSmall([$reference], $driver)) {
+                    $skippedSmall = true;
+
+                    continue;
+                }
+
+                $looked = true;
+                $unsuggested[] = $skippable[] = new UnsuggestedQuery($connection, $fingerprint, sprintf(
+                    '%s on `%s`, but `%s` finds ~%s rows per key (%s), so checking the other predicates (%s) on the rows it finds%s is cheap',
+                    implode(', ', [...($sortsFewRows ? [self::REASON_FILESORT] : []), self::REASON_PARTIAL_INDEX_USE]),
+                    $reference->table,
+                    $access->key,
+                    // Rounded down: the gate fires only below twice a handful.
+                    number_format(max(1, floor($fewRows[0]))),
+                    self::columnList($access->usedKeyParts ?? []),
+                    self::columnList($fewRows[1]),
+                    $sortsFewRows ? ', and sorting them,' : '',
+                ), UnsuggestedBecause::FewRowsPerKey);
+
                 continue;
             }
 

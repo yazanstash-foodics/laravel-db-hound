@@ -17,6 +17,9 @@ enum UnsuggestedBecause
     /** What is left to index once columns frequent UPDATEs write are left out is nothing, weak filters, or what an existing index serves. */
     case OnlyWriteHot;
 
+    /** The plan seeks on part of an index and checks other predicates on the rows it finds, but each seek finds too few rows for an index that also seeks on them to be worth its writes. */
+    case FewRowsPerKey;
+
     /** The query has no predicate on the table: whatever reads all its rows reads them in full. */
     case NoPredicates;
 
@@ -53,7 +56,7 @@ enum UnsuggestedBecause
     public function skipped(): bool
     {
         return match ($this) {
-            self::OnlyLowSelectivity, self::OnlyWriteHot, self::OnlyNegations, self::NoPredicates => true,
+            self::OnlyLowSelectivity, self::OnlyWriteHot, self::OnlyNegations, self::NoPredicates, self::FewRowsPerKey => true,
             self::UnindexablePredicates, self::UnresolvedColumns, self::ParserFailed, self::UnattributableTable, self::OtherDatabase,
             self::TableLookupFailed, self::ExplainFailed, self::NoSample => false,
         };
