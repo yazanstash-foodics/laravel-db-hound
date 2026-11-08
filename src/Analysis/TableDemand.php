@@ -19,6 +19,8 @@ final readonly class TableDemand
      * @param  list<string>  $required  columns the index must have even when they are weak filters: those the plan checks row by row past the part of its index it seeks on
      * @param  bool  $unresolvedColumns  whether some column of the query could not be attributed to a table
      * @param  list<string>  $softDeleteColumns  columns a soft delete sets, whose predicate (`deleted_at IS NULL`) matches nearly every row
+     * @param  bool  $statisticsTrusted  whether the table has enough rows for its index statistics, and the plan's choice of index, to mean something
+     * @param  bool  $sampled  whether the plan was explained with the Sample's bindings: values the query ran with, not placeholders
      */
     public function __construct(
         public QueryAggregate $query,
@@ -36,6 +38,8 @@ final readonly class TableDemand
         public array $required = [],
         public bool $unresolvedColumns = false,
         public array $softDeleteColumns = [],
+        public bool $statisticsTrusted = true,
+        public bool $sampled = false,
     ) {}
 
     /**
@@ -413,6 +417,70 @@ final readonly class TableDemand
         }
 
         return null;
+    }
+
+    /**
+     * The existing index, other than the one the access reads, that fits
+     * the query as well as `$candidate` would, though it does not serve it
+     * (`servedBy()`): the plan likely did not pick it because the table is
+     * small or its statistics are stale. One the plan lists among the
+     * indexes it could seek on (`possible_keys`) that leads with a column of
+     * `$candidate` the access does not seek on and that seeks as selectively
+     * as `$candidate`'s leading column: an equality or an `IN` list on a
+     * column that finds only a handful of rows (and no fewer distinct
+     * values than that leading column by statistics; by statistics alone
+     * when it is that leading column, whose fan-out the column type cannot
+     * tell), or, on a table too small for statistics and explained with
+     * the Sample's bindings, a `LIKE` (MySQL lists an index for one only
+     * with a constant prefix) when `$candidate`'s leading column finds more
+     * than a handful. Of several, the one whose first columns the query
+     * pins most of. Never for a subquery the plan runs once per outer row
+     * (dependent), which reads those rows that many times. Null when none
+     * fits.
+     */
+    public function fittingIndex(IndexCandidate $candidate): ?Index
+    {
+        $lead = $candidate->columns[0] ?? null;
+
+        if ($lead === null || $this->access->dependent) {
+            return null;
+        }
+
+        $used = $this->access->usedKeyParts ?? [];
+        $pinned = array_diff($this->pinned(), $this->reference->nullSafe);
+        $best = null;
+        $bestPinned = -1;
+
+        foreach ($this->indexes as $index) {
+            $leading = $index->columns[0] ?? '';
+
+            if ($index->name === $this->access->key || ! $index->servesLookups()
+                || ! in_array($index->name, $this->access->possibleKeys ?? [], true)
+                || $leading === '' || ! in_array($leading, $candidate->columns, true) || in_array($leading, $used, true)) {
+                continue;
+            }
+
+            // One that leads with the candidate's own leading column is the fan-out question (`fewRowsPerSeek()`): statistics answer it, never the type.
+            $fits = in_array($leading, $pinned, true)
+                ? $this->selectivity->seeksAsSelectivelyAs($leading, $lead, $this->rowCount)
+                    && ($leading !== $lead || $this->selectivity->handfulAssumedFromType($leading) === null)
+                // A placeholder binding has no wildcard: only the Sample's pattern shows whether MySQL can seek on the LIKE.
+                : in_array($leading, $this->reference->likes, true) && $this->sampled && ! $this->statisticsTrusted
+                    && ! $this->selectivity->findsAHandful($lead, $this->rowCount);
+
+            // How many of its first columns the query pins: the more, the fewer rows it reads.
+            $run = 0;
+
+            while (isset($index->columns[$run]) && in_array($index->columns[$run], $pinned, true)) {
+                $run++;
+            }
+
+            if ($fits && $run > $bestPinned) {
+                [$best, $bestPinned] = [$index, $run];
+            }
+        }
+
+        return $best;
     }
 
     public function table(): string

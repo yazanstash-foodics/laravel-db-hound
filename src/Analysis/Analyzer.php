@@ -19,6 +19,8 @@ final class Analyzer
 {
     public const REASON_FULL_SCAN = 'full scan';
 
+    public const REASON_FULL_INDEX_SCAN = 'full index scan';
+
     public const REASON_NO_INDEX = 'no index used';
 
     public const REASON_FILESORT = 'filesort';
@@ -139,12 +141,12 @@ final class Analyzer
                 $read[$query->connection][$table] = true;
             }
 
-            // Every table is inspected before the Fingerprint demands any index,
-            // so a failed lookup leaves no Suggestion half-served.
+            // A table that cannot be inspected is reported on its own: the others are analyzed as usual.
             $small = false;
+            $uninspected = false;
 
             try {
-                $demanded = $this->candidates($query, $shape->sql, $plan, $driver, $unsuggested, $small, $skippable);
+                $demanded = $this->candidates($query, $shape->sql, $plan, $driver, $statement->sampled, $unsuggested, $small, $skippable, $uninspected);
             } catch (Throwable $e) {
                 $outcomes[spl_object_id($query)] = FingerprintOutcome::Other;
                 $unsuggested[] = new UnsuggestedQuery($query->connection, $query->sql, self::failure('inspecting its tables', $e), UnsuggestedBecause::TableLookupFailed);
@@ -155,6 +157,11 @@ final class Analyzer
             // Every symptom of its plan is on a table too small to index.
             if ($small) {
                 $outcomes[spl_object_id($query)] = FingerprintOutcome::RowThreshold;
+            }
+
+            // No table with a symptom could be inspected: nothing of it was analyzed.
+            if ($uninspected) {
+                $outcomes[spl_object_id($query)] = FingerprintOutcome::Other;
             }
 
             array_push($demands, ...$demanded);
@@ -202,7 +209,7 @@ final class Analyzer
         }
 
         try {
-            $extracted = $this->extractor->extract($sql, fn (string $table) => array_keys($driver->columnTypes($table)));
+            $extracted = $this->extractor->extract($sql, self::columnsOrUnknown($driver));
         } catch (Throwable) {
             return [];
         }
@@ -727,14 +734,19 @@ final class Analyzer
      * turn into a candidate are added to `$unsuggested`; `$small` is set when
      * every symptomatic access was left out because its table is under the
      * row threshold. An access whose table has only low-selectivity
-     * predicates, or none, is also added to `$skippable`: it is listed only
-     * when no Suggestion serves the Fingerprint.
+     * predicates, or none, or that an existing index other than the one the
+     * plan reads already fits, is also added to `$skippable`: it is listed
+     * only when no Suggestion serves the Fingerprint. A symptomatic access
+     * whose table cannot be inspected is added to `$unsuggested` on its own,
+     * the other tables analyzed as usual; `$uninspected` is set when no
+     * other symptomatic access was looked at.
      *
+     * @param  bool  $sampled  whether the plan was explained with the Sample's bindings
      * @param  list<UnsuggestedQuery>  $unsuggested
      * @param  list<UnsuggestedQuery>  $skippable
      * @return list<TableDemand>
      */
-    private function candidates(QueryAggregate $query, string $sql, Plan $plan, Driver $driver, array &$unsuggested, bool &$small, array &$skippable): array
+    private function candidates(QueryAggregate $query, string $sql, Plan $plan, Driver $driver, bool $sampled, array &$unsuggested, bool &$small, array &$skippable, bool &$uninspected = false): array
     {
         $fingerprint = $query->sql;
         $connection = $query->connection;
@@ -747,23 +759,19 @@ final class Analyzer
         }
 
         $symptomatic = array_filter($symptoms) !== [] || $plan->usingFilesort || $plan->usingTemporary;
-        // Only the SQL tells whether a predicate the plan checks on the rows of a partly used index is one an index could seek on.
-        $pastKey = array_filter(array_intersect_key($plan->accesses, $symptoms), fn (TableAccess $access) => $access->checksRowsPastKey());
+        // Only the SQL tells whether a predicate the plan checks on the rows of a partly used index is one an index could seek on,
+        // or whether the condition a full index scan checks on every entry is on a column the index lacks.
+        $mayShow = array_filter(
+            array_intersect_key($plan->accesses, $symptoms),
+            fn (TableAccess $access) => $access->checksRowsPastKey() || $access->scansIndexChecking(),
+        );
 
-        if (! $symptomatic && $pastKey === []) {
+        if (! $symptomatic && $mayShow === []) {
             return [];
         }
 
-        $columns = function (string $table) use ($driver): array {
-            try {
-                return array_keys($driver->columnTypes($table));
-            } catch (Throwable $e) {
-                throw new TableLookupFailed($e);
-            }
-        };
-
         try {
-            $extracted = $this->extractor->extract($sql, $columns);
+            $extracted = $this->extractor->extract($sql, self::columnsOrUnknown($driver));
         } catch (Throwable $e) {
             // A plan with no other symptom only may show a partial index use: one db-hound cannot read is no Fingerprint that needs attention.
             if (! $symptomatic) {
@@ -776,11 +784,6 @@ final class Analyzer
                 return [];
             }
 
-            // A failed schema lookup is the database's, not the parser's: the caller reports it.
-            if ($e instanceof TableLookupFailed) {
-                throw $e->failure;
-            }
-
             // A parser bug on one query must not abort the run.
             $unsuggested[] = new UnsuggestedQuery($connection, $fingerprint, 'the SQL parser failed on it ('.class_basename($e).')', UnsuggestedBecause::ParserFailed);
 
@@ -791,6 +794,8 @@ final class Analyzer
         // Whether a symptomatic access was left out for its table being too small, and whether another one was looked at.
         $skippedSmall = false;
         $looked = false;
+        // Whether a symptomatic access was left out for its table failing to be inspected.
+        $failed = false;
         // Tables inside a materialized subquery or derived table are read apart from the join around it.
         $readBefore = [];
         $driving = $this->driving($plan);
@@ -807,74 +812,106 @@ final class Analyzer
                 continue;
             }
 
-            $references = $extracted->named($access->table, $access->within, $materialized, $access->selectList, $access->sorting, $access->union);
+            // The table the plan reads, by its name in the query once known: what a failed lookup is reported on.
+            $table = $access->table;
+            $lookedBefore = $looked;
 
-            if (count($references) !== 1) {
-                if ($reasons === []) {
-                    continue;
-                }
+            try {
+                $references = $extracted->named($access->table, $access->within, $materialized, $access->selectList, $access->sorting, $access->union);
 
-                if ($references !== [] && $this->allSmall($references, $driver)) {
-                    $skippedSmall = true;
-
-                    continue;
-                }
-
-                $looked = true;
-                $unsuggested[] = new UnsuggestedQuery($connection, $fingerprint, sprintf(
-                    '%s on `%s`, but %s',
-                    implode(', ', $reasons),
-                    $access->table,
-                    $references === [] ? 'the query has no such table' : 'several table references have that name',
-                ), UnsuggestedBecause::UnattributableTable);
-
-                continue;
-            }
-
-            $reference = $references[0];
-
-            // A sort is served by the index of the table the plan drives the join from.
-            if ($reference->sort !== [] && $position === $driving) {
-                array_push($reasons, ...array_filter([
-                    $plan->usingFilesort ? self::REASON_FILESORT : null,
-                    $plan->usingTemporary ? self::REASON_TEMPORARY : null,
-                ]));
-            }
-
-            $pastKey = [];
-            // The rows each seek finds and the predicates the plan checks on them, when too few rows for an index on those to be worth it.
-            $fewRows = null;
-            // Whether the plan sorts only those few rows.
-            $sortsFewRows = false;
-
-            // Only a table of the default database is inspected (see below).
-            if ($reference->database === null && $access->checksRowsPastKey()) {
-                try {
-                    $partial = $this->demand($query, $access, $plan, $reasons, $reference, $before, $position === $driving, $driver);
-                    $pastKey = $partial->predicatesPastKey();
-                    $perSeek = $pastKey === [] ? null : $partial->fewRowsPerSeek();
-
-                    if ($perSeek !== null) {
-                        [$fewRows, $pastKey] = [[$perSeek, $pastKey], []];
-
-                        // A filesort of the table the plan drives the join from sorts the rows it finds, before any join: as cheap.
-                        // A temporary table may hold more rows than it finds: its sort keeps the usual demand.
-                        if (in_array(self::REASON_FILESORT, $reasons, true) && ! $plan->usingTemporary) {
-                            $reasons = array_values(array_diff($reasons, [self::REASON_FILESORT]));
-                            $sortsFewRows = true;
-                        }
+                if (count($references) !== 1) {
+                    if ($reasons === []) {
+                        continue;
                     }
-                } catch (Throwable) {
-                    // A table that cannot be inspected shows no partial index use: the lookup failing must not drop what the other tables need.
+
+                    if ($references !== [] && $this->allSmall($references, $driver)) {
+                        $skippedSmall = true;
+
+                        continue;
+                    }
+
+                    $looked = true;
+                    $unsuggested[] = new UnsuggestedQuery($connection, $fingerprint, sprintf(
+                        '%s on `%s`, but %s',
+                        implode(', ', $reasons),
+                        $access->table,
+                        $references === [] ? 'the query has no such table' : 'several table references have that name',
+                    ), UnsuggestedBecause::UnattributableTable);
+
+                    continue;
                 }
-            }
 
-            if ($pastKey !== []) {
-                $reasons[] = self::REASON_PARTIAL_INDEX_USE;
-            }
+                $reference = $references[0];
+                $table = $reference->table;
 
-            if ($reasons === []) {
-                if ($fewRows === null) {
+                if ($reasons === [] && $reference->database === null && $access->scansIndexChecking() && $this->checksOutsideIndex($access, $reference, $before, $driver)) {
+                    $reasons = [self::REASON_FULL_INDEX_SCAN];
+                }
+
+                // A sort is served by the index of the table the plan drives the join from.
+                if ($reference->sort !== [] && $position === $driving) {
+                    array_push($reasons, ...array_filter([
+                        $plan->usingFilesort ? self::REASON_FILESORT : null,
+                        $plan->usingTemporary ? self::REASON_TEMPORARY : null,
+                    ]));
+                }
+
+                $pastKey = [];
+                // The rows each seek finds and the predicates the plan checks on them, when too few rows for an index on those to be worth it.
+                $fewRows = null;
+                // Whether the plan sorts only those few rows.
+                $sortsFewRows = false;
+
+                // Only a table of the default database is inspected (see below).
+                if ($reference->database === null && $access->checksRowsPastKey()) {
+                    try {
+                        $partial = $this->demand($query, $access, $plan, $reasons, $reference, $before, $position === $driving, $driver);
+                        $pastKey = $partial->predicatesPastKey();
+                        $perSeek = $pastKey === [] ? null : $partial->fewRowsPerSeek();
+
+                        if ($perSeek !== null) {
+                            [$fewRows, $pastKey] = [[$perSeek, $pastKey], []];
+
+                            // A filesort of the table the plan drives the join from sorts the rows it finds, before any join: as cheap.
+                            // A temporary table may hold more rows than it finds: its sort keeps the usual demand.
+                            if (in_array(self::REASON_FILESORT, $reasons, true) && ! $plan->usingTemporary) {
+                                $reasons = array_values(array_diff($reasons, [self::REASON_FILESORT]));
+                                $sortsFewRows = true;
+                            }
+                        }
+                    } catch (Throwable) {
+                        // A table that cannot be inspected shows no partial index use: the lookup failing must not drop what the other tables need.
+                    }
+                }
+
+                if ($pastKey !== []) {
+                    $reasons[] = self::REASON_PARTIAL_INDEX_USE;
+                }
+
+                if ($reasons === []) {
+                    if ($fewRows === null) {
+                        continue;
+                    }
+
+                    if ($this->allSmall([$reference], $driver)) {
+                        $skippedSmall = true;
+
+                        continue;
+                    }
+
+                    $looked = true;
+                    $unsuggested[] = $skippable[] = new UnsuggestedQuery($connection, $fingerprint, sprintf(
+                        '%s on `%s`, but `%s` finds ~%s rows per key (%s), so checking the other predicates (%s) on the rows it finds%s is cheap',
+                        implode(', ', [...($sortsFewRows ? [self::REASON_FILESORT] : []), self::REASON_PARTIAL_INDEX_USE]),
+                        $reference->table,
+                        $access->key,
+                        // Rounded down: the gate fires only below twice a handful.
+                        number_format(max(1, floor($fewRows[0]))),
+                        self::columnList($access->usedKeyParts ?? []),
+                        self::columnList($fewRows[1]),
+                        $sortsFewRows ? ', and sorting them,' : '',
+                    ), UnsuggestedBecause::FewRowsPerKey);
+
                     continue;
                 }
 
@@ -885,86 +922,108 @@ final class Analyzer
                 }
 
                 $looked = true;
-                $unsuggested[] = $skippable[] = new UnsuggestedQuery($connection, $fingerprint, sprintf(
-                    '%s on `%s`, but `%s` finds ~%s rows per key (%s), so checking the other predicates (%s) on the rows it finds%s is cheap',
-                    implode(', ', [...($sortsFewRows ? [self::REASON_FILESORT] : []), self::REASON_PARTIAL_INDEX_USE]),
-                    $reference->table,
-                    $access->key,
-                    // Rounded down: the gate fires only below twice a handful.
-                    number_format(max(1, floor($fewRows[0]))),
-                    self::columnList($access->usedKeyParts ?? []),
-                    self::columnList($fewRows[1]),
-                    $sortsFewRows ? ', and sorting them,' : '',
-                ), UnsuggestedBecause::FewRowsPerKey);
 
-                continue;
-            }
+                // The Driver inspects the connection's default database: another one's table would be looked up in the wrong schema.
+                if ($reference->database !== null) {
+                    $unsuggested[] = new UnsuggestedQuery($connection, $fingerprint, sprintf(
+                        "%s on `%s`, but it is read from database `%s`, and db-hound inspects only the connection's default database",
+                        implode(', ', $reasons),
+                        $access->table,
+                        $reference->database,
+                    ), UnsuggestedBecause::OtherDatabase);
 
-            if ($this->allSmall([$reference], $driver)) {
-                $skippedSmall = true;
-
-                continue;
-            }
-
-            $looked = true;
-
-            // The Driver inspects the connection's default database: another one's table would be looked up in the wrong schema.
-            if ($reference->database !== null) {
-                $unsuggested[] = new UnsuggestedQuery($connection, $fingerprint, sprintf(
-                    "%s on `%s`, but it is read from database `%s`, and db-hound inspects only the connection's default database",
-                    implode(', ', $reasons),
-                    $access->table,
-                    $reference->database,
-                ), UnsuggestedBecause::OtherDatabase);
-
-                continue;
-            }
-
-            $demand = $this->demand($query, $access, $plan, $reasons, $reference, $before, $position === $driving, $driver, $pastKey, $extracted->hasUnresolvedColumns);
-            $candidate = $demand->candidate();
-
-            if ($candidate === null) {
-                // A column it cannot place, or a predicate it cannot read, may be what an index needs: that is a failure to read the query.
-                // Only negations, or no predicate at all, are a decision that no index helps.
-                [$but, $because] = match (true) {
-                    $extracted->hasUnresolvedColumns => ['no indexable predicate columns were found'.self::UNRESOLVED, UnsuggestedBecause::UnresolvedColumns],
-                    $reference->hasUnindexablePredicates => ['no indexable predicate columns were found', UnsuggestedBecause::UnindexablePredicates],
-                    $reference->negated !== [] => ['it has only negated predicates ('.self::columnList(array_values(array_unique($reference->negated))).')', UnsuggestedBecause::OnlyNegations],
-                    $reference->unfiltered() => ['the query has no predicate on it', UnsuggestedBecause::NoPredicates],
-                    default => [null, null],
-                };
-
-                if ($because === null) {
                     continue;
                 }
 
-                $entry = $unsuggested[] = new UnsuggestedQuery($connection, $fingerprint, sprintf('%s on `%s`, but %s', implode(', ', $reasons), $reference->table, $but), $because);
+                $demand = $this->demand($query, $access, $plan, $reasons, $reference, $before, $position === $driving, $driver, $pastKey, $extracted->hasUnresolvedColumns, $sampled);
+                $candidate = $demand->candidate();
 
-                if ($because === UnsuggestedBecause::NoPredicates) {
-                    $skippable[] = $entry;
+                if ($candidate === null) {
+                    // A column it cannot place, or a predicate it cannot read, may be what an index needs: that is a failure to read the query.
+                    // Only negations, or no predicate at all, are a decision that no index helps.
+                    [$but, $because] = match (true) {
+                        $extracted->hasUnresolvedColumns => ['no indexable predicate columns were found'.self::UNRESOLVED, UnsuggestedBecause::UnresolvedColumns],
+                        $reference->hasUnindexablePredicates => ['no indexable predicate columns were found', UnsuggestedBecause::UnindexablePredicates],
+                        $reference->negated !== [] => ['it has only negated predicates ('.self::columnList(array_values(array_unique($reference->negated))).')', UnsuggestedBecause::OnlyNegations],
+                        $reference->unfiltered() => ['the query has no predicate on it', UnsuggestedBecause::NoPredicates],
+                        default => [null, null],
+                    };
+
+                    if ($because === null) {
+                        continue;
+                    }
+
+                    $entry = $unsuggested[] = new UnsuggestedQuery($connection, $fingerprint, sprintf('%s on `%s`, but %s', implode(', ', $reasons), $reference->table, $but), $because);
+
+                    if ($because === UnsuggestedBecause::NoPredicates) {
+                        $skippable[] = $entry;
+                    }
+
+                    continue;
                 }
 
-                continue;
-            }
+                if ($candidate->onlyWeak) {
+                    $unsuggested[] = $skippable[] = new UnsuggestedQuery($connection, $fingerprint, sprintf(
+                        '%s on `%s`, but it has only low-selectivity predicates (%s)%s',
+                        implode(', ', $reasons),
+                        $reference->table,
+                        implode(', ', array_map(fn (string $column) => '`'.$column.'`', $candidate->columns)),
+                        $extracted->hasUnresolvedColumns ? self::UNRESOLVED : '',
+                    ), $extracted->hasUnresolvedColumns ? UnsuggestedBecause::UnresolvedColumns : UnsuggestedBecause::OnlyLowSelectivity);
 
-            if ($candidate->onlyWeak) {
-                $unsuggested[] = $skippable[] = new UnsuggestedQuery($connection, $fingerprint, sprintf(
-                    '%s on `%s`, but it has only low-selectivity predicates (%s)%s',
-                    implode(', ', $reasons),
-                    $reference->table,
-                    implode(', ', array_map(fn (string $column) => '`'.$column.'`', $candidate->columns)),
-                    $extracted->hasUnresolvedColumns ? self::UNRESOLVED : '',
-                ), $extracted->hasUnresolvedColumns ? UnsuggestedBecause::UnresolvedColumns : UnsuggestedBecause::OnlyLowSelectivity);
+                    continue;
+                }
 
-                continue;
-            }
+                $servedBy = $demand->servedBy($candidate);
 
-            if ($demand->servedBy($candidate) === null) {
+                // An existing index serves it: no Suggestion, and nothing to say, unless the plan could seek on it but read another.
+                if ($servedBy !== null && ($servedBy->name === $access->key || ! in_array($servedBy->name, $access->possibleKeys ?? [], true))) {
+                    continue;
+                }
+
+                $fitting = $servedBy ?? $demand->fittingIndex($candidate);
+
+                if ($fitting !== null) {
+                    // A LIKE fits for MySQL seeking on it, not for a handful of rows.
+                    $assumed = $fitting === $servedBy || in_array($fitting->columns[0], $reference->likes, true)
+                        ? null
+                        : $demand->selectivity->handfulAssumedFromType($fitting->columns[0]);
+                    $unsuggested[] = $skippable[] = new UnsuggestedQuery($connection, $fingerprint, sprintf(
+                        '%s on `%s`, but the existing index `%s` fits%s; the plan likely picked another because the table is small or its statistics are stale',
+                        implode(', ', $reasons),
+                        $reference->table,
+                        $fitting->name,
+                        $assumed === null ? '' : sprintf(
+                            ' (`%s` finds only a handful of rows, assumed from the column type, `%s`, as no index statistics db-hound trusts measure it)',
+                            $fitting->columns[0],
+                            $assumed,
+                        ),
+                    ), UnsuggestedBecause::ExistingIndexFits);
+
+                    continue;
+                }
+
                 $candidates[] = $demand;
+            } catch (Throwable $e) {
+                // Only this table is left out: the others are analyzed as usual.
+                $looked = $lookedBefore;
+
+                if ($reasons === []) {
+                    continue;
+                }
+
+                $failed = true;
+                $unsuggested[] = new UnsuggestedQuery($connection, $fingerprint, sprintf(
+                    '%s on `%s`, but %s',
+                    implode(', ', $reasons),
+                    $table,
+                    self::failure('inspecting it', $e),
+                ), UnsuggestedBecause::TableLookupFailed);
             }
         }
 
-        $small = $skippedSmall && ! $looked;
+        $small = $skippedSmall && ! $looked && ! $failed;
+        $uninspected = $failed && ! $looked && ! $skippedSmall;
 
         return $candidates;
     }
@@ -976,8 +1035,9 @@ final class Analyzer
      * @param  list<string>  $reasons
      * @param  list<string>  $before  names of the references the plan reads before this one
      * @param  list<string>  $required
+     * @param  bool  $sampled  whether the plan was explained with the Sample's bindings
      */
-    private function demand(QueryAggregate $query, TableAccess $access, Plan $plan, array $reasons, TableColumns $reference, array $before, bool $drives, Driver $driver, array $required = [], bool $unresolvedColumns = false): TableDemand
+    private function demand(QueryAggregate $query, TableAccess $access, Plan $plan, array $reasons, TableColumns $reference, array $before, bool $drives, Driver $driver, array $required = [], bool $unresolvedColumns = false, bool $sampled = false): TableDemand
     {
         $table = $reference->table;
         $indexes = $driver->indexes($table);
@@ -1003,7 +1063,65 @@ final class Analyzer
             required: $required,
             unresolvedColumns: $unresolvedColumns,
             softDeleteColumns: $this->softDeleteColumns,
+            statisticsTrusted: $driver->rowCount($table) >= $this->minRowsForCardinality,
+            sampled: $sampled,
         );
+    }
+
+    /**
+     * Looks up a table's column names for the SQL parser: null when the
+     * lookup fails, so the table may have any column and the query's other
+     * tables are still read.
+     *
+     * @return Closure(string): ?list<string>
+     */
+    private static function columnsOrUnknown(Driver $driver): Closure
+    {
+        return function (string $table) use ($driver): ?array {
+            try {
+                return array_keys($driver->columnTypes($table));
+            } catch (Throwable) {
+                return null;
+            }
+        };
+    }
+
+    /**
+     * Whether the query filters the table on a column the index a full
+     * index scan reads does not hold (the primary key InnoDB appends to it
+     * included): the condition the plan checks on every entry then reads
+     * the row, a full scan in disguise. A join equality counts once the
+     * table it joins is read, and a negation never does (no index would
+     * serve it). False when the table cannot be inspected.
+     *
+     * @param  list<string>  $before  names of the references the plan reads before this one
+     */
+    private function checksOutsideIndex(TableAccess $access, TableColumns $reference, array $before, Driver $driver): bool
+    {
+        try {
+            $indexes = $driver->indexes($reference->table);
+            $primaryKey = PrimaryKey::of($indexes, $driver->engine($reference->table));
+        } catch (Throwable) {
+            return false;
+        }
+
+        $held = null;
+
+        foreach ($indexes as $index) {
+            if ($index->name === $access->key) {
+                $held = $primaryKey->appendedTo($index->columns);
+            }
+        }
+
+        $filters = [...$reference->lists, ...$reference->ranges, ...$reference->nulls, ...$reference->notNulls];
+
+        foreach ($reference->equalities as ['column' => $column, 'joinedTo' => $joinedTo]) {
+            if ($joinedTo === null || in_array($joinedTo, $before, true)) {
+                $filters[] = $column;
+            }
+        }
+
+        return $held !== null && array_diff($filters, $held) !== [];
     }
 
     /**

@@ -333,7 +333,10 @@ it('lists a Fingerprint whose schema inspection fails as unparsed and still anal
         ->and($result->suggestions[0]->table)->toBe('orders')
         ->and($result->unparsed)->toHaveCount(1)
         ->and($result->unparsed[0]->sql)->toBe($broken)
-        ->and($result->unparsed[0]->reason)->toBe('inspecting its tables failed (QueryException, SQLSTATE HY000)');
+        // Without a Sample, the column types are looked up to EXPLAIN it at all; otherwise the plan's table is what fails.
+        ->and($result->unparsed[0]->reason)->toBe($failing === 'columnTypes' && ! $sampled
+            ? 'inspecting its tables failed (QueryException, SQLSTATE HY000)'
+            : 'full scan on `archive`, but inspecting it failed (QueryException, SQLSTATE HY000)');
 })->with(['indexes', 'engine', 'rowCount', 'columnTypes', 'cardinality'])->with(['with a Sample' => true, 'without a Sample' => false]);
 
 /**

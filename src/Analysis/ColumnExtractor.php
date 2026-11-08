@@ -59,15 +59,17 @@ final class ColumnExtractor
     /** @var list<int> the part (0 for the first SELECT) of each UNION whose query is being read, outermost first */
     private array $union = [];
 
-    /** @var callable(string): list<string> */
+    /** @var callable(string): ?list<string> */
     private $columnsOf;
 
-    /** @var array<string, array<string, string>> lowercased column name => as the schema spells it, per table */
+    /** @var array<string, ?array<string, string>> lowercased column name => as the schema spells it, per table; null when unknown */
     private array $columns = [];
 
     /**
-     * @param  callable(string): list<string>  $columnsOf  a base table's column names, to place
-     *                                                     unqualified columns when a query reads several tables
+     * @param  callable(string): ?list<string>  $columnsOf  a base table's column names, to place
+     *                                                      unqualified columns when a query reads several tables;
+     *                                                      null when they cannot be looked up, so the table may
+     *                                                      have any column
      *
      * @throws UnparseableSql
      */
@@ -632,7 +634,7 @@ final class ColumnExtractor
             'IS' => count($operand) === 1 && in_array($operand[0]['value'], ['NULL', 'NOT NULL'], true)
                 && $this->nullCheck($column, $operand[0]['value'] === 'NULL', $chain),
             'BETWEEN', 'LIKE' => $this->constant(array_values(array_filter($operand, fn (array $token) => ! $this->isAnd($token))))
-                && $this->range($column, $chain),
+                && $this->range($column, $chain, $value === 'LIKE'),
             default => false,
         };
     }
@@ -708,11 +710,12 @@ final class ColumnExtractor
     /**
      * @param  array{qualifier: ?string, column: string, next: int}  $column
      * @param  list<array<string, ?TableColumns>>  $chain
+     * @param  bool  $like  whether it is a `LIKE`
      */
-    private function range(array $column, array $chain): bool
+    private function range(array $column, array $chain, bool $like = false): bool
     {
         $reference = $this->resolve($column['qualifier'], $column['column'], $chain);
-        $reference?->addRange($this->spelled($reference, $column['column']));
+        $reference?->addRange($this->spelled($reference, $column['column']), $like);
 
         return true;
     }
@@ -940,7 +943,7 @@ final class ColumnExtractor
      */
     private function resolve(?string $qualifier, string $column, array $chain, bool $record = true): ?TableColumns
     {
-        foreach ($chain as $scope) {
+        foreach ($chain as $at => $scope) {
             if ($qualifier !== null) {
                 if (array_key_exists($qualifier, $scope)) {
                     return $scope[$qualifier];
@@ -950,10 +953,16 @@ final class ColumnExtractor
             }
 
             $tables = array_values(array_filter($scope));
-            $owners = array_values(array_filter($tables, fn (TableColumns $reference) => in_array(strtolower($column), $this->columnsOf($reference->table), true)));
+            // A table whose columns are unknown may have this one: it is never placed in another table that has it too.
+            $owners = array_values(array_filter($tables, fn (TableColumns $reference) => in_array(strtolower($column), $this->columnsOf($reference->table) ?? [strtolower($column)], true)));
 
             if (count($owners) === 1) {
-                return $owners[0];
+                // A table whose columns are unknown claims it only when no outer table may have it: it may be a correlated column of one.
+                if ($this->columnsOf($owners[0]->table) !== null || ! $this->mayBeOuter($column, array_slice($chain, $at + 1))) {
+                    return $owners[0];
+                }
+
+                break;
             }
 
             if (count($owners) > 1) {
@@ -972,21 +981,42 @@ final class ColumnExtractor
     }
 
     /**
-     * @return list<string> lowercased
+     * Whether a table of the `$outer` scopes has `$column`, or may have it
+     * since its columns are unknown.
+     *
+     * @param  list<array<string, ?TableColumns>>  $outer
      */
-    private function columnsOf(string $table): array
+    private function mayBeOuter(string $column, array $outer): bool
     {
-        return array_keys($this->schema($table));
+        foreach ($outer as $scope) {
+            foreach (array_filter($scope) as $reference) {
+                if (in_array(strtolower($column), $this->columnsOf($reference->table) ?? [strtolower($column)], true)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
-     * @return array<string, string> lowercased column name => as the schema spells it
+     * @return ?list<string> lowercased; null when unknown
      */
-    private function schema(string $table): array
+    private function columnsOf(string $table): ?array
     {
-        if (! isset($this->columns[$table])) {
+        $schema = $this->schema($table);
+
+        return $schema === null ? null : array_keys($schema);
+    }
+
+    /**
+     * @return ?array<string, string> lowercased column name => as the schema spells it; null when unknown
+     */
+    private function schema(string $table): ?array
+    {
+        if (! array_key_exists($table, $this->columns)) {
             $names = ($this->columnsOf)($table);
-            $this->columns[$table] = array_combine(array_map(strtolower(...), $names), $names);
+            $this->columns[$table] = $names === null ? null : array_combine(array_map(strtolower(...), $names), $names);
         }
 
         return $this->columns[$table];
@@ -998,7 +1028,7 @@ final class ColumnExtractor
      */
     private function spelled(TableColumns $reference, string $column): string
     {
-        return $this->schema($reference->table)[strtolower($column)] ?? $column;
+        return ($this->schema($reference->table) ?? [])[strtolower($column)] ?? $column;
     }
 
     /**

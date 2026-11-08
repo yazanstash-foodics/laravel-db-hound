@@ -17,6 +17,7 @@ final readonly class TableAccess
      * @param  bool  $sorting  whether a subquery in GROUP BY or ORDER BY reads it
      * @param  list<int>  $union  the part (0 for the first SELECT) of each UNION whose query reads it, outermost first
      * @param  bool  $dependent  whether a subquery the plan marks dependent reads it: one it runs once per row of the query around it
+     * @param  ?list<string>  $possibleKeys  the indexes the optimizer could seek on for this access (`possible_keys`); null when the plan lists none
      */
     public function __construct(
         public string $table,
@@ -32,11 +33,22 @@ final readonly class TableAccess
         public bool $sorting = false,
         public array $union = [],
         public bool $dependent = false,
+        public ?array $possibleKeys = null,
     ) {}
 
     public function isFullScan(): bool
     {
         return strtoupper($this->accessType) === 'ALL';
+    }
+
+    /**
+     * Whether the access reads every entry of an index (`index`) and checks
+     * a condition on each: when the condition is on a column the index does
+     * not hold, it is a full scan in disguise.
+     */
+    public function scansIndexChecking(): bool
+    {
+        return $this->key !== null && $this->checksRows && strtolower($this->accessType) === 'index';
     }
 
     /**

@@ -41,6 +41,15 @@ final class TableColumns
     public array $ranges = [];
 
     /**
+     * The columns of `$ranges` compared with `LIKE`: with a constant prefix
+     * (which MySQL shows by listing an index on the column among the
+     * plan's `possible_keys`), a seek on an identifier's first characters.
+     *
+     * @var list<string>
+     */
+    public array $likes = [];
+
+    /**
      * `IS NULL` predicates: an equality to seek on, but a weak filter, since
      * on a soft-delete column (`deleted_at IS NULL`) it matches nearly every row.
      *
@@ -112,9 +121,13 @@ final class TableColumns
         $this->lists[] = $column;
     }
 
-    public function addRange(string $column): void
+    public function addRange(string $column, bool $like = false): void
     {
         $this->ranges[] = $column;
+
+        if ($like) {
+            $this->likes[] = $column;
+        }
     }
 
     public function addNull(string $column): void
@@ -169,6 +182,7 @@ final class TableColumns
         $without->nullSafe = $keep($this->nullSafe);
         $without->lists = $keep($this->lists);
         $without->ranges = $keep($this->ranges);
+        $without->likes = $keep($this->likes);
         $without->nulls = $keep($this->nulls);
         $without->notNulls = $keep($this->notNulls);
 

@@ -1,0 +1,42 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "0.35"
+        },
+        "table": {
+            "table_name": "onboard_requests",
+            "access_type": "ref",
+            "possible_keys": [
+                "onboard_requests_merchant_id_index",
+                "onboard_requests_merchant_owner_id_index"
+            ],
+            "key": "onboard_requests_merchant_id_index",
+            "used_key_parts": [
+                "merchant_id"
+            ],
+            "key_length": "145",
+            "ref": [
+                "const"
+            ],
+            "rows_examined_per_scan": 1,
+            "rows_produced_per_join": 1,
+            "filtered": "100.00",
+            "index_condition": "((`db_hound_shapes`.`onboard_requests`.`merchant_id` = '6f1c2a7e-0000-4000-8000-000000000002') and (`db_hound_shapes`.`onboard_requests`.`merchant_id` is not null))",
+            "cost_info": {
+                "read_cost": "0.25",
+                "eval_cost": "0.10",
+                "prefix_cost": "0.35",
+                "data_read_per_join": "384"
+            },
+            "used_columns": [
+                "id",
+                "merchant_id",
+                "merchant_owner_id",
+                "status",
+                "created_at"
+            ],
+            "attached_condition": "(`db_hound_shapes`.`onboard_requests`.`merchant_owner_id` = '6f1c2a7e-0000-4000-8000-000000000001')"
+        }
+    }
+}

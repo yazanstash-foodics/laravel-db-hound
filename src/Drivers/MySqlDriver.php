@@ -465,6 +465,9 @@ final class MySqlDriver implements Driver
                 sorting: $sorting,
                 union: $union,
                 dependent: $dependent,
+                possibleKeys: isset($node['possible_keys']) && is_array($node['possible_keys'])
+                    ? array_values(array_map(strval(...), $node['possible_keys']))
+                    : null,
             );
         }
 

@@ -20,6 +20,9 @@ enum UnsuggestedBecause
     /** The plan seeks on part of an index and checks other predicates on the rows it finds, but each seek finds too few rows for an index that also seeks on them to be worth its writes. */
     case FewRowsPerKey;
 
+    /** An existing index other than the one the plan reads already fits the query: the plan likely did not pick it because the table is small or its statistics are stale. */
+    case ExistingIndexFits;
+
     /** The query has no predicate on the table: whatever reads all its rows reads them in full. */
     case NoPredicates;
 
@@ -56,7 +59,7 @@ enum UnsuggestedBecause
     public function skipped(): bool
     {
         return match ($this) {
-            self::OnlyLowSelectivity, self::OnlyWriteHot, self::OnlyNegations, self::NoPredicates, self::FewRowsPerKey => true,
+            self::OnlyLowSelectivity, self::OnlyWriteHot, self::OnlyNegations, self::NoPredicates, self::FewRowsPerKey, self::ExistingIndexFits => true,
             self::UnindexablePredicates, self::UnresolvedColumns, self::ParserFailed, self::UnattributableTable, self::OtherDatabase,
             self::TableLookupFailed, self::ExplainFailed, self::NoSample => false,
         };

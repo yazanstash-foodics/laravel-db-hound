@@ -72,6 +72,24 @@ final readonly class Selectivity
     }
 
     /**
+     * Whether an equality on `$column` finds as few rows of a table of
+     * `$rows` rows as one on `$other`: it finds only a handful
+     * (`findsAHandful()`), and, when both have statistics, has at least as
+     * many distinct values.
+     */
+    public function seeksAsSelectivelyAs(string $column, string $other, int $rows): bool
+    {
+        if (! $this->findsAHandful($column, $rows)) {
+            return false;
+        }
+
+        $mine = $this->cardinality[$column] ?? 0;
+        $theirs = $this->cardinality[$other] ?? 0;
+
+        return $mine === 0 || $theirs === 0 || $mine >= $theirs;
+    }
+
+    /**
      * The rows of a table of `$rows` rows an equality on every one of
      * `$columns` finds on average, by the statistics of the one with the
      * most distinct values (the columns together have at least as many):

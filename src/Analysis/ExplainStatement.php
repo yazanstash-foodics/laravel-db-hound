@@ -15,10 +15,12 @@ final readonly class ExplainStatement
 {
     /**
      * @param  array<int|string, mixed>  $bindings
+     * @param  bool  $sampled  whether the bindings are the Sample's: values the query ran with, not placeholders
      */
     private function __construct(
         public string $sql,
         public array $bindings,
+        public bool $sampled,
     ) {}
 
     /**
@@ -37,11 +39,11 @@ final readonly class ExplainStatement
         $explainable = $sample === null ? null : ExplainableQuery::from($sample->sql, $sample->bindings);
 
         if ($explainable !== null) {
-            return new self($explainable->sql, $explainable->bindings);
+            return new self($explainable->sql, $explainable->bindings, true);
         }
 
         $bindings = $placeholders->for($shape->sql, $driver);
 
-        return $bindings === null ? null : new self($shape->sql, $bindings);
+        return $bindings === null ? null : new self($shape->sql, $bindings, false);
     }
 }
