@@ -14,6 +14,8 @@ final readonly class TableAccess
      * @param  bool  $selectList  whether a subquery in the SELECT list reads it
      * @param  ?list<string>  $usedKeyParts  the columns of `$key` the access seeks on, in index order; null when the plan does not say
      * @param  bool  $checksRows  whether the plan checks a condition on the rows (or index entries) the access reads, past what it seeks on
+     * @param  bool  $sorting  whether a subquery in GROUP BY or ORDER BY reads it
+     * @param  list<int>  $union  the part (0 for the first SELECT) of each UNION whose query reads it, outermost first
      */
     public function __construct(
         public string $table,
@@ -26,6 +28,8 @@ final readonly class TableAccess
         public bool $selectList = false,
         public ?array $usedKeyParts = null,
         public bool $checksRows = false,
+        public bool $sorting = false,
+        public array $union = [],
     ) {}
 
     public function isFullScan(): bool

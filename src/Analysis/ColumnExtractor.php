@@ -5,6 +5,7 @@ namespace Foodics\DbHound\Analysis;
 use PhpMyAdmin\SqlParser\Components\Condition;
 use PhpMyAdmin\SqlParser\Components\Expression;
 use PhpMyAdmin\SqlParser\Components\GroupKeyword;
+use PhpMyAdmin\SqlParser\Components\JoinKeyword;
 use PhpMyAdmin\SqlParser\Components\OrderKeyword;
 use PhpMyAdmin\SqlParser\Lexer;
 use PhpMyAdmin\SqlParser\Parser;
@@ -52,6 +53,12 @@ final class ColumnExtractor
     /** whether a subquery in the SELECT list is being read */
     private bool $selectList = false;
 
+    /** whether a subquery in GROUP BY or ORDER BY is being read */
+    private bool $sorting = false;
+
+    /** @var list<int> the part (0 for the first SELECT) of each UNION whose query is being read, outermost first */
+    private array $union = [];
+
     /** @var callable(string): list<string> */
     private $columnsOf;
 
@@ -71,22 +78,118 @@ final class ColumnExtractor
         $this->derived = [];
         $this->within = [];
         $this->selectList = false;
+        $this->sorting = false;
+        $this->union = [];
         $this->columnsOf = $columnsOf;
         $this->columns = [];
 
-        $statement = $this->parse($sql);
+        $this->query($this->parse($sql), [], []);
 
-        $this->select($statement, [], []);
+        return new ExtractedColumns($this->references, $this->unresolved, $this->derived);
+    }
 
-        foreach ($statement->union as $union) {
-            $part = $this->unionPart($union);
+    /**
+     * The tables a statement names right after FROM or a JOIN, at any
+     * depth, read from its tokens alone (no parsing), as `table` or
+     * `database.table`: a check on what `extract()` finds. A FROM within a
+     * function call (`EXTRACT(YEAR FROM …)`) names no table, nor does a JOIN
+     * before the query's FROM (the `SELECT STRAIGHT_JOIN` modifier); a
+     * derived table, a table function and `DUAL` are none; a table listed
+     * after a comma is not looked for.
+     *
+     * @return list<string>
+     */
+    public function tablesNamed(string $sql): array
+    {
+        [$tokens] = $this->tokens($sql);
+        $names = [];
+        // Whether each open parenthesis holds a query (a subquery, or a parenthesized join), outermost first.
+        $query = [true];
+        // Whether each one's FROM has been read, outermost first: a parenthesized join's tables, and an UPDATE's, need none.
+        $from = [($tokens[0]['value'] ?? null) !== 'SELECT'];
 
-            if ($part !== null) {
-                $this->select($part, [], []);
+        foreach ($tokens as $i => $token) {
+            $previous = $tokens[$i - 1] ?? null;
+
+            if ($token['kind'] === 'open') {
+                $subquery = ($tokens[$i + 1]['value'] ?? null) === 'SELECT';
+                $joined = ! $subquery && end($query) && $previous !== null
+                    && ($this->namesTable($previous, end($from)) || $previous['kind'] === 'open');
+                $query[] = $subquery || $joined;
+                $from[] = $joined;
+
+                continue;
+            }
+
+            if ($token['kind'] === 'close') {
+                array_pop($query);
+                array_pop($from);
+
+                continue;
+            }
+
+            if (! end($query) || ! $this->namesTable($token, end($from))) {
+                continue;
+            }
+
+            if ($token['value'] === 'FROM') {
+                $from[array_key_last($from)] = true;
+            }
+
+            $at = $i + 1;
+
+            while (($tokens[$at]['kind'] ?? null) === 'open' && ($tokens[$at + 1]['value'] ?? null) !== 'SELECT') {
+                $at++;
+            }
+
+            $table = $this->columnAt($tokens, $at);
+
+            if ($table !== null && ($tokens[$table['next']]['kind'] ?? null) !== 'open') {
+                $names[] = ($table['qualifier'] === null ? '' : $table['qualifier'].'.').$table['column'];
             }
         }
 
-        return new ExtractedColumns($this->references, $this->unresolved, $this->derived);
+        return array_values(array_unique($names));
+    }
+
+    /**
+     * Whether the token is a FROM, or a JOIN once the query's FROM is read.
+     *
+     * @param  array{kind: string, value: string, at: int}  $token
+     */
+    private function namesTable(array $token, bool $afterFrom): bool
+    {
+        return $token['kind'] === 'keyword' && ($token['value'] === 'FROM' || ($afterFrom && str_ends_with($token['value'], 'JOIN')));
+    }
+
+    /**
+     * A query and each part of its UNION, in the same scope.
+     *
+     * @param  list<array<string, ?TableColumns>>  $outer  enclosing scopes, innermost first
+     * @param  list<string>  $within  the aliases of the derived tables whose query this is, outermost first
+     */
+    private function query(SelectStatement $statement, array $outer, array $within): void
+    {
+        if ($statement->union === []) {
+            $this->select($statement, $outer, $within);
+
+            return;
+        }
+
+        $enclosing = $this->union;
+
+        try {
+            // Each part is marked with its position, as the plan's `query_specifications` lists them.
+            foreach ([$statement, ...array_map($this->unionPart(...), $statement->union)] as $position => $part) {
+                $this->union = [...$enclosing, $position];
+
+                if ($part !== null) {
+                    $this->select($part, $outer, $within);
+                }
+            }
+        } finally {
+            $this->union = $enclosing;
+        }
     }
 
     /**
@@ -141,18 +244,21 @@ final class ColumnExtractor
         /** @var array<string, ?TableColumns> $scope */
         $scope = [];
 
-        foreach ($select->from as $expression) {
+        [$from, $joins] = $this->spread($select->from, $select->join ?? []);
+
+        foreach ($from as $expression) {
             $this->addReference($scope, $expression, $outer);
         }
 
         $using = [];
 
-        foreach ($select->join ?? [] as $join) {
+        foreach ($joins as [$join, $group]) {
             if ($join->expr === null) {
                 continue;
             }
 
-            $previous = $scope;
+            // A join inside a parenthesized join reads its USING columns from that join's tables alone.
+            $previous = $group === null ? $scope : array_intersect_key($scope, array_flip($group));
             $joined = $this->addReference($scope, $join->expr, $outer);
 
             foreach ($join->using->values ?? [] as $column) {
@@ -162,7 +268,7 @@ final class ColumnExtractor
 
         $chain = [$scope, ...$outer];
 
-        foreach ($select->join ?? [] as $join) {
+        foreach ($joins as [$join]) {
             $this->conditions($join->on, $chain);
         }
 
@@ -191,6 +297,23 @@ final class ColumnExtractor
             }
         }
 
+        // A subquery in GROUP BY or ORDER BY (EXPLAIN's `group_by_subqueries`, `order_by_subqueries`) filters its own tables too.
+        foreach ([...$select->group ?? [], ...$select->order ?? []] as $item) {
+            $sql = (string) $item->expr?->expr;
+
+            if (stripos($sql, 'select') !== false) {
+                [$tokens, $raw] = $this->tokens($sql);
+                $enclosing = $this->sorting;
+                $this->sorting = true;
+
+                try {
+                    $this->withSubqueries($tokens, $raw, $chain);
+                } finally {
+                    $this->sorting = $enclosing;
+                }
+            }
+        }
+
         foreach ($using as [$joined, $previous, $column]) {
             $other = $this->resolve(null, $column, [$previous]);
 
@@ -203,6 +326,103 @@ final class ColumnExtractor
     }
 
     /**
+     * The FROM and JOIN table references, with each parenthesized join
+     * (`a left join (b inner join c on …) on …`) spread into the table
+     * references it joins, which MySQL reads in the join around it: the
+     * first takes the join's ON / USING, the others keep their own. Each
+     * join comes with the names of the table references its USING columns
+     * are read from when it sits inside a parenthesized join (those joined
+     * before it there), null for the query's own joins (all those before it).
+     *
+     * @param  array<Expression>  $from
+     * @param  array<JoinKeyword>  $joins
+     * @return array{list<Expression>, list<array{JoinKeyword, ?list<string>}>}
+     */
+    private function spread(array $from, array $joins): array
+    {
+        $tables = [];
+        $joined = [];
+
+        foreach ($from as $expression) {
+            $nested = $this->nestedJoin($expression);
+
+            if ($nested === null) {
+                $tables[] = $expression;
+
+                continue;
+            }
+
+            array_push($tables, ...$nested[0]);
+            array_push($joined, ...$nested[1]);
+        }
+
+        foreach ($joins as $join) {
+            if ($join->expr === null) {
+                continue;
+            }
+
+            $nested = $this->nestedJoin($join->expr);
+
+            if ($nested === null) {
+                $joined[] = [$join, null];
+
+                continue;
+            }
+
+            foreach ($nested[0] as $position => $expression) {
+                $joined[] = $position === 0
+                    ? [new JoinKeyword($join->type, $expression, $join->on, $join->using), null]
+                    : [new JoinKeyword('JOIN', $expression), null];
+            }
+
+            array_push($joined, ...$nested[1]);
+        }
+
+        return [$tables, $joined];
+    }
+
+    /**
+     * The table references of a parenthesized join, null for any other
+     * FROM or JOIN item, each of its joins with the table references
+     * joined before it there.
+     *
+     * @return array{list<Expression>, list<array{JoinKeyword, list<string>}>}|null
+     */
+    private function nestedJoin(Expression $expression): ?array
+    {
+        $sql = trim((string) $expression->expr);
+
+        if (($expression->table !== null && $expression->table !== '') || $expression->subquery !== null || ! str_starts_with($sql, '(')) {
+            return null;
+        }
+
+        $statement = $this->parse('select * from '.$this->unwrap($sql));
+        [$tables, $joins] = $this->spread($statement->from, $statement->join ?? []);
+        $before = array_map($this->referenceName(...), $tables);
+        $grouped = [];
+
+        foreach ($joins as [$join, $group]) {
+            $grouped[] = [$join, $group ?? $before];
+
+            if ($join->expr !== null) {
+                $before[] = $this->referenceName($join->expr);
+            }
+        }
+
+        return [$tables, $grouped];
+    }
+
+    /**
+     * The name a FROM or JOIN item takes in the query's scope.
+     */
+    private function referenceName(Expression $expression): string
+    {
+        return $expression->subquery !== null || $expression->table === null || $expression->table === ''
+            ? (string) $expression->alias
+            : ($expression->alias ?? $expression->table);
+    }
+
+    /**
      * @param  array<string, ?TableColumns>  $scope
      * @param  list<array<string, ?TableColumns>>  $outer
      */
@@ -210,7 +430,7 @@ final class ColumnExtractor
     {
         if ($expression->subquery !== null) {
             $alias = (string) $expression->alias;
-            $this->select($this->parse($this->unwrap((string) $expression->expr)), $outer, [...$this->within, $alias]);
+            $this->query($this->parse($this->unwrap((string) $expression->expr)), $outer, [...$this->within, $alias]);
             $scope[$alias] = null;
             $this->derived[] = $alias;
 
@@ -229,6 +449,8 @@ final class ColumnExtractor
             $expression->database === null || $expression->database === '' ? null : $expression->database,
             $this->within,
             $this->selectList,
+            $this->sorting,
+            $this->union,
         );
         $this->references[] = $reference;
         $scope[$reference->name] = $reference;
@@ -615,7 +837,7 @@ final class ColumnExtractor
                 $close = $this->closing($tokens, $i);
                 $sql = implode('', array_slice($raw, $tokens[$i]['at'] + 1, $tokens[$close]['at'] - $tokens[$i]['at'] - 1));
 
-                $this->select($this->parse($sql), $chain, $this->within);
+                $this->query($this->parse($sql), $chain, $this->within);
 
                 $result[] = ['kind' => 'subquery', 'value' => '', 'at' => $tokens[$i]['at']];
                 $i = $close;

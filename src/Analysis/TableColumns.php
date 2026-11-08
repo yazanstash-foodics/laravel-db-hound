@@ -85,6 +85,8 @@ final class TableColumns
      * @param  ?string  $database  the database the query names for the table, if any
      * @param  list<string>  $within  the aliases of the derived tables (FROM subqueries) whose query reads it, outermost first
      * @param  bool  $selectList  whether a subquery in the SELECT list reads it
+     * @param  bool  $sorting  whether a subquery in GROUP BY or ORDER BY reads it
+     * @param  list<int>  $union  the part (0 for the first SELECT) of each UNION whose query reads it, outermost first
      */
     public function __construct(
         public readonly string $name,
@@ -92,6 +94,8 @@ final class TableColumns
         public readonly ?string $database = null,
         public readonly array $within = [],
         public readonly bool $selectList = false,
+        public readonly bool $sorting = false,
+        public readonly array $union = [],
     ) {}
 
     public function addEquality(string $column, ?string $joinedTo = null, bool $nullSafe = false): void

@@ -776,7 +776,7 @@ final class Analyzer
                 continue;
             }
 
-            $references = $extracted->named($access->table, $access->within, $materialized, $access->selectList);
+            $references = $extracted->named($access->table, $access->within, $materialized, $access->selectList, $access->sorting, $access->union);
 
             if (count($references) !== 1) {
                 if ($reasons === []) {

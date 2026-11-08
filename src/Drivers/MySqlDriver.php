@@ -428,8 +428,10 @@ final class MySqlDriver implements Driver
      * @param  list<TableAccess>  $accesses
      * @param  list<string>  $within  the tables whose materialization the node is part of, outermost first
      * @param  bool  $selectList  whether the node is part of a subquery in the SELECT list
+     * @param  bool  $sorting  whether the node is part of a subquery in GROUP BY or ORDER BY
+     * @param  list<int>  $union  the part of each UNION the node is part of, outermost first
      */
-    private static function walk(array $node, array &$accesses, bool &$filesort, bool &$temporary, array $within = [], bool $selectList = false): void
+    private static function walk(array $node, array &$accesses, bool &$filesort, bool &$temporary, array $within = [], bool $selectList = false, bool $sorting = false, array $union = []): void
     {
         if (($node['using_filesort'] ?? false) === true) {
             $filesort = true;
@@ -457,20 +459,32 @@ final class MySqlDriver implements Driver
                     : null,
                 // Only whether there is one: the condition's text holds the literal values.
                 checksRows: isset($node['attached_condition']) || isset($node['index_condition']),
+                sorting: $sorting,
+                union: $union,
             );
         }
 
         foreach ($node as $key => $child) {
-            if (is_array($child)) {
-                self::walk(
-                    $child,
-                    $accesses,
-                    $filesort,
-                    $temporary,
-                    $key === 'materialized_from_subquery' ? [...$within, (string) $table] : $within,
-                    $selectList || $key === 'select_list_subqueries',
-                );
+            if (! is_array($child)) {
+                continue;
             }
+
+            $nestedWithin = $key === 'materialized_from_subquery' ? [...$within, (string) $table] : $within;
+            $nestedSelectList = $selectList || $key === 'select_list_subqueries';
+            $nestedSorting = $sorting || $key === 'order_by_subqueries' || $key === 'group_by_subqueries';
+
+            // Each SELECT of a UNION, in the order the statement lists them.
+            if ($key === 'query_specifications' && array_is_list($child)) {
+                foreach ($child as $part => $specification) {
+                    if (is_array($specification)) {
+                        self::walk($specification, $accesses, $filesort, $temporary, $nestedWithin, $nestedSelectList, $nestedSorting, [...$union, $part]);
+                    }
+                }
+
+                continue;
+            }
+
+            self::walk($child, $accesses, $filesort, $temporary, $nestedWithin, $nestedSelectList, $nestedSorting, $union);
         }
     }
 }
