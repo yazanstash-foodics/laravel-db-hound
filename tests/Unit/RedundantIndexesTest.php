@@ -81,9 +81,12 @@ it('never reports a unique, primary, FULLTEXT or invisible index as redundant, n
         new Index('orders_merchant_id_unique', ['merchant_id'], true),
         new Index('orders_merchant_id_status_index', ['merchant_id', 'status'], false),
     ]],
-    'two identical unique indexes' => [[
+    'a unique index and a longer unique index starting with its columns' => [[
         new Index('orders_reference_unique', ['reference'], true),
-        new Index('reference', ['reference'], true),
+        new Index('orders_reference_status_unique', ['reference', 'status'], true),
+    ]],
+    'an invisible unique duplicate of the primary key' => [[
+        new Index('orders_id_unique', ['id'], true, visible: false),
     ]],
     'the primary key as a left prefix' => [[
         new Index('orders_id_created_at_index', ['id', 'created_at'], false),
@@ -324,4 +327,53 @@ it('names the order a descending left prefix holds with the ascending primary ke
 
     expect(array_map(fn ($entry) => [$entry->redundant->name, $entry->lostOrder], $result->redundant))
         ->toBe([['orders_branch_id_desc_index', ['branch_id', 'id']]]);
+});
+
+it('reports a unique index duplicating the primary key, naming the primary key, which keeps the constraint', function () {
+    $result = redundantAmong([new Index('orders_id_unique', ['id'], true)]);
+
+    expect(redundantIndexes($result))->toBe([['orders', 'orders_id_unique', 'PRIMARY', true]]);
+});
+
+it('reports the later-named of two identical unique indexes', function () {
+    $result = redundantAmong([
+        new Index('orders_reference_unique', ['reference'], true),
+        new Index('reference', ['reference'], true),
+    ]);
+
+    expect(redundantIndexes($result))->toBe([['orders', 'reference', 'orders_reference_unique', true]]);
+});
+
+it('compares unique indexes by prefix lengths and directions too', function (array $indexes, array $expected) {
+    expect(redundantIndexes(redundantAmong($indexes)))->toBe($expected);
+})->with([
+    'another prefix length' => [[
+        new Index('orders_reference_unique', ['reference'], true),
+        new Index('orders_reference_prefix_unique', ['reference'], true, prefixLengths: ['reference' => 8]),
+    ], []],
+    'mixed directions' => [[
+        new Index('orders_merchant_id_status_unique', ['merchant_id', 'status'], true),
+        new Index('orders_merchant_id_status_desc_unique', ['merchant_id', 'status'], true, descending: ['status']),
+    ], []],
+    'the same prefix length' => [[
+        new Index('orders_reference_unique', ['reference'], true, prefixLengths: ['reference' => 8]),
+        new Index('orders_reference_prefix_unique', ['reference'], true, prefixLengths: ['reference' => 8]),
+    ], [['orders', 'orders_reference_unique', 'orders_reference_prefix_unique', true]]],
+]);
+
+it('never reports a unique index on an InnoDB table without a primary key, which may be the one InnoDB clusters the rows on', function () {
+    $tables = millionOrders();
+    $tables['orders']['primary'] = null;
+    $tables['orders']['indexes'] = [
+        new Index('z_reference_unique', ['reference'], true),
+        new Index('a_reference_unique', ['reference'], true),
+        new Index('orders_reference_index', ['reference'], false),
+    ];
+
+    $result = analyzeWithCardinality(
+        ['select * from `orders` where `customer_id` = ?' => new Plan([new TableAccess('orders', 'ALL', null, 1_000_000)])],
+        $tables,
+    );
+
+    expect(redundantIndexes($result))->toBe([['orders', 'orders_reference_index', 'a_reference_unique', true]]);
 });

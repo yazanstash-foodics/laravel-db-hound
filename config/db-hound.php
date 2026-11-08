@@ -244,6 +244,12 @@ return [
     | matches nearly every row, so it is never the reason for one: it may
     | still trail an index suggested for another predicate.
     |
+    | A suggested index never holds a column captured UPDATEs write at least
+    | as often as the queries it serves with that column run: each write
+    | would also maintain it. That comparison is made only once those
+    | UPDATEs ran at least `hot_update_min_count` times in total, so a short
+    | capture (2 writes against 1 read) does not drop a column.
+    |
     */
 
     'analysis' => [
@@ -259,6 +265,7 @@ return [
         'low_selectivity_share' => (float) env('DB_HOUND_ANALYSIS_LOW_SELECTIVITY_SHARE', 0.1),
         'min_rows_for_cardinality' => (int) env('DB_HOUND_ANALYSIS_MIN_ROWS_FOR_CARDINALITY', 1000),
         'soft_delete_columns' => ['deleted_at'],
+        'hot_update_min_count' => (int) env('DB_HOUND_ANALYSIS_HOT_UPDATE_MIN_COUNT', 100),
 
         'ignore' => [
             'tables' => [

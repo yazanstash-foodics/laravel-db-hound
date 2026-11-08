@@ -26,7 +26,7 @@ enum UnsuggestedBecause
     /** The query has no predicate on the table: whatever reads all its rows reads them in full. */
     case NoPredicates;
 
-    /** The table is filtered only on negations (`!=`, `<>`, `NOT column = value`), which match nearly every row. */
+    /** The table is filtered only on negations (`!=`, `<>`, `NOT column = value`, `NOT IN`), which match nearly every row. */
     case OnlyNegations;
 
     /** The table's predicates are ones db-hound does not read as an index's (an `OR`, a function of a column, a row constructor, an `IN` subquery): an index may still serve them. */

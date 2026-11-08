@@ -162,11 +162,11 @@ function reportContext(): ReportContext
 /**
  * A Driver over tables shaped like those of the staging Report the ticket
  * cites, with per-column cardinality as MySQL index statistics would give it.
- * Each table's primary key is `id` unless `primary` names its columns, and
- * its engine InnoDB unless `engine` names another.
+ * Each table's primary key is `id` unless `primary` names its columns (null
+ * for a table without one), and its engine InnoDB unless `engine` names another.
  *
  * @param  array<string, Plan>  $plans  SQL => plan
- * @param  array<string, array{rows: int, columns: array<string, string>, engine?: string, primary?: list<string>, indexes?: list<Index>, cardinality?: array<string, int>}>  $tables
+ * @param  array<string, array{rows: int, columns: array<string, string>, engine?: string, primary?: ?list<string>, indexes?: list<Index>, cardinality?: array<string, int>}>  $tables
  */
 function cardinalityDriver(array $plans, array $tables): Driver
 {
@@ -186,7 +186,9 @@ function cardinalityDriver(array $plans, array $tables): Driver
 
         public function indexes(string $table): array
         {
-            return [new Index('PRIMARY', $this->tables[$table]['primary'] ?? ['id'], true), ...$this->tables[$table]['indexes'] ?? []];
+            $primary = array_key_exists('primary', $this->tables[$table] ?? []) ? $this->tables[$table]['primary'] : ['id'];
+
+            return [...$primary === null ? [] : [new Index('PRIMARY', $primary, true)], ...$this->tables[$table]['indexes'] ?? []];
         }
 
         public function engine(string $table): string
@@ -217,7 +219,7 @@ function cardinalityDriver(array $plans, array $tables): Driver
  * and max ms `$stats` gives it, else 10 runs of 100 ms on average.
  *
  * @param  array<string, Plan>  $plans  SQL => plan
- * @param  array<string, array{rows: int, columns: array<string, string>, engine?: string, primary?: list<string>, indexes?: list<Index>, cardinality?: array<string, int>}>  $tables
+ * @param  array<string, array{rows: int, columns: array<string, string>, engine?: string, primary?: ?list<string>, indexes?: list<Index>, cardinality?: array<string, int>}>  $tables
  * @param  array<string, array{int, float, float}>  $stats  SQL => [count, total ms, max ms]
  */
 function analyzeWithCardinality(array $plans, array $tables, ?Analyzer $analyzer = null, array $stats = []): AnalysisResult

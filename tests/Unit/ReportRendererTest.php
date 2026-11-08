@@ -496,6 +496,21 @@ None.
 MD);
 });
 
+it('says the index left keeps the constraint of a redundant unique index', function () {
+    $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult([], [], redundant: [
+        new RedundantIndex('mysql', 'orders', new Index('orders_id_unique', ['id'], true), new Index('PRIMARY', ['id'], true), true),
+    ]));
+
+    expect($markdown)->toEndWith(<<<'MD'
+## Redundant existing indexes
+
+- **mysql** — `orders`: `orders_id_unique` (`id`) unique is an exact duplicate of `PRIMARY` (`id`) unique, which serves every lookup it does.
+  - **Unique constraint:** `PRIMARY` enforces the same uniqueness on the same columns, so the constraint `orders_id_unique` enforces is kept once it is dropped.
+  - **Foreign keys:** MySQL needs an index starting with a foreign key's columns. `PRIMARY` starts with every column of `orders_id_unique`, so it can back any foreign key `orders_id_unique` backs, but verify the table's foreign key constraints before dropping it. db-hound never drops an index.
+
+MD);
+});
+
 it('says None. when no existing index is redundant', function () {
     $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult([], []));
 

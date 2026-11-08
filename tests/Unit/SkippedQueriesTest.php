@@ -36,6 +36,26 @@ it('skips a query filtered only on negations, and leaves one whose predicates it
         ['full scan on `orders`, but it has only negated predicates (`closed_at`)'],
         [],
     ],
+    '`NOT IN`' => [
+        'select * from `orders` where `status` not in (?, ?)',
+        ['full scan on `orders`, but it has only negated predicates (`status`)'],
+        [],
+    ],
+    '`NOT IN` of one value' => [
+        'select * from `orders` where `orders`.`status` not in (?)',
+        ['full scan on `orders`, but it has only negated predicates (`status`)'],
+        [],
+    ],
+    '`NOT IN` and `!=`' => [
+        'select * from `orders` where `status` not in (?, ?) and `kind` != ?',
+        ['full scan on `orders`, but it has only negated predicates (`status`, `kind`)'],
+        [],
+    ],
+    'a `NOT IN` subquery' => [
+        'select * from `orders` where `customer_id` not in (select `customer_id` from `orders` as `o2` where `o2`.`branch_id` = ?)',
+        [],
+        ['full scan on `orders`, but no indexable predicate columns were found'],
+    ],
     // MySQL serves an OR of indexed predicates with an index merge, and a function of a column with a functional index.
     'an OR' => [
         'select * from `orders` where `status` = ? or `total` > ?',
@@ -74,6 +94,20 @@ it('skips a query filtered only on negations, and leaves one whose predicates it
         ['full scan on `orders`, but no indexable predicate columns were found (some columns of the query could not be attributed to a table)'],
     ],
 ]);
+
+it('analyzes a query filtered on `NOT IN` and an equality as usual, the negation left out of the index', function () {
+    $tables = millionOrders();
+    $tables['orders']['columns']['merchant_id'] = 'char(36)';
+
+    $result = analyzeWithCardinality(
+        ['select * from `orders` where `status` not in (?, ?) and `merchant_id` = ?' => new Plan([new TableAccess('orders', 'ALL', null, 1_000_000)])],
+        $tables,
+    );
+
+    expect(suggestedIndexes($result))->toBe([['orders', ['merchant_id']]])
+        ->and(skippedReasons($result))->toBe([])
+        ->and(unparsedReasons($result))->toBe([]);
+});
 
 it('leaves a query with a column it cannot attribute unparsed, whatever else the table is filtered on', function () {
     $sql = 'select * from `orders` where `deleted_at` is null and `archived_on` = ?';

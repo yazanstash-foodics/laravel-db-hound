@@ -75,6 +75,10 @@ final class ReportRenderer
                     .'(e.g. `ORDER BY '.implode(', ', [$old->columns[array_key_last($old->columns)], ...$key]).'`).';
             }
 
+            if ($old->unique) {
+                $lines[] = "  - **Unique constraint:** `{$new->name}` enforces the same uniqueness on the same columns, so the constraint `{$old->name}` enforces is kept once it is dropped.";
+            }
+
             $lines[] = "  - **Foreign keys:** MySQL needs an index starting with a foreign key's columns. `{$new->name}` starts with every column of `{$old->name}`, "
                 ."so it can back any foreign key `{$old->name}` backs, but verify the table's foreign key constraints before dropping it. db-hound never drops an index.";
         }

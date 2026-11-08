@@ -43,6 +43,9 @@ final class Analyzer
     /** Columns a soft delete sets: a predicate on one of them alone never makes a partial index use. */
     public const SOFT_DELETE_COLUMNS = ['deleted_at'];
 
+    /** Runs, in total, below which the UPDATEs writing a column never make it write-hot: a short capture says little about how often they run. */
+    public const HOT_UPDATE_MIN_COUNT = 100;
+
     /**
      * @param  list<string>  $softDeleteColumns  columns a soft delete sets: a predicate on one of them alone never makes a partial index use
      */
@@ -55,6 +58,7 @@ final class Analyzer
         private readonly float $lowSelectivityShare = self::LOW_SELECTIVITY_SHARE,
         private readonly int $minRowsForCardinality = self::MIN_ROWS_FOR_CARDINALITY,
         private readonly array $softDeleteColumns = self::SOFT_DELETE_COLUMNS,
+        private readonly int $hotUpdateMinCount = self::HOT_UPDATE_MIN_COUNT,
     ) {}
 
     /**
@@ -308,7 +312,9 @@ final class Analyzer
     /**
      * The consolidated Suggestions the demands make, none indexing a column
      * UPDATEs write at least as often as the queries it would serve with
-     * that column run: each write would also maintain the index. Those are
+     * that column run, and at least `$hotUpdateMinCount` times in total (a
+     * short capture's 2 writes against 1 read say nothing): each write
+     * would also maintain the index. Those are
      * the Fingerprints of one consolidated Suggestion that need the column
      * (an UPDATE it serves aside, its write being the price of its own
      * lookup). Their demands are built again without it, as if their
@@ -356,7 +362,7 @@ final class Analyzer
 
                     $writers = array_diff_key($writes->writers($suggestion->connection, $suggestion->table, $column), array_flip($suggestion->fingerprints));
 
-                    if ($writers !== [] && array_sum($writers) >= array_sum($runs)) {
+                    if ($writers !== [] && array_sum($writers) >= max($this->hotUpdateMinCount, array_sum($runs))) {
                         foreach ($readers as $demand) {
                             $hot[$demand][$column] = $writers;
                         }

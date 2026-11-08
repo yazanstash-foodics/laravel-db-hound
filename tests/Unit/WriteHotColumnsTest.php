@@ -28,12 +28,14 @@ const TOKEN_TOUCH = 'update `personal_access_tokens` set `last_used_at` = ?, `pe
  * one connection, over the `$tables` of cardinalityDriver(). `$plans` gives
  * a Fingerprint's plan (an UPDATE's is that of the SELECT it is explained
  * as); one it leaves out reads its table by primary key, with no symptom.
+ * `$hotUpdateMinCount` is the floor below which UPDATEs never make a
+ * column write-hot: 1 by default, so only the relative test applies.
  *
  * @param  array<string, array{int, float}>  $fingerprints
  * @param  array<string, Plan>  $plans  Fingerprint SQL => plan
  * @param  array<string, array{rows: int, columns: array<string, string>, engine?: string, primary?: list<string>, indexes?: list<Index>, cardinality?: array<string, int>}>  $tables
  */
-function analyzeWrites(array $fingerprints, array $plans, array $tables, Qualification $qualification = new Qualification(minCount: 0, minAvgMs: 0.0, minMaxMs: 0.0, minTableRows: 0)): AnalysisResult
+function analyzeWrites(array $fingerprints, array $plans, array $tables, Qualification $qualification = new Qualification(minCount: 0, minAvgMs: 0.0, minMaxMs: 0.0, minTableRows: 0), int $hotUpdateMinCount = 1): AnalysisResult
 {
     $queries = [];
     $explained = [];
@@ -44,7 +46,7 @@ function analyzeWrites(array $fingerprints, array $plans, array $tables, Qualifi
         $explained[$explain] = $plans[$sql] ?? new Plan([new TableAccess(array_key_first($tables), 'const', 'PRIMARY', 1)]);
     }
 
-    $analyzer = new Analyzer(new Encrypter(str_repeat('k', 32), 'aes-256-cbc'), qualification: $qualification);
+    $analyzer = new Analyzer(new Encrypter(str_repeat('k', 32), 'aes-256-cbc'), qualification: $qualification, hotUpdateMinCount: $hotUpdateMinCount);
 
     return $analyzer->analyze($queries, cardinalityDriver($explained, $tables));
 }
@@ -461,3 +463,29 @@ it('leaves a query with a column it cannot attribute unparsed when only columns 
             'full scan on `orders`, but it has only columns written by frequent UPDATEs (`customer_id`) (some columns of the query could not be attributed to a table)',
         ]);
 });
+
+it('treats a column as write-hot only once the UPDATEs writing it ran at least the floor in total (staging, a short capture)', function (array $updates, int $reads, int $floor, array $columns) {
+    $read = 'select * from `orders` where `branch_id` = ? and `customer_id` = ? order by `created_at` desc limit ?';
+    $writers = [REASSIGN_ORDER, 'update `orders` set `customer_id` = ? where `reference` = ?'];
+    $fingerprints = [];
+
+    foreach ($updates as $i => $count) {
+        $fingerprints[$writers[$i]] = [$count, 1.0 * $count];
+    }
+
+    $result = analyzeWrites(
+        $fingerprints + [$read => [$reads, 100.0 * $reads]],
+        [$read => ordersScan(sorts: true)],
+        millionOrders(['branch_id' => 1_000, 'customer_id' => 200_000]),
+        hotUpdateMinCount: $floor,
+    );
+
+    expect(unsuggested($result))->toBe([])
+        ->and(array_map(fn ($suggestion) => $suggestion->columns, $result->suggestions))->toBe([$columns]);
+})->with([
+    'written 2 times, read once, below the default floor' => [[2], 1, Analyzer::HOT_UPDATE_MIN_COUNT, ['customer_id', 'branch_id', 'created_at']],
+    'written 150 times, read 100 times' => [[150], 100, Analyzer::HOT_UPDATE_MIN_COUNT, ['branch_id', 'created_at']],
+    'written 2 times, read once, with a floor of 1' => [[2], 1, 1, ['branch_id', 'created_at']],
+    'written 99 times, read 50 times, just below the floor' => [[99], 50, Analyzer::HOT_UPDATE_MIN_COUNT, ['customer_id', 'branch_id', 'created_at']],
+    'written 60 and 40 times by two UPDATEs, read 50 times, the floor in total' => [[60, 40], 50, Analyzer::HOT_UPDATE_MIN_COUNT, ['branch_id', 'created_at']],
+]);

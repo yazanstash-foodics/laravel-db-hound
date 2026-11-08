@@ -564,7 +564,8 @@ final class ColumnExtractor
     }
 
     /**
-     * `column != value`, `column <> value` or `NOT column = value`.
+     * `column != value`, `column <> value`, `NOT column = value` or
+     * `column NOT IN (values)`.
      *
      * @param  list<array{kind: string, value: string, at: int}>  $tokens
      * @param  list<array<string, ?TableColumns>>  $chain
@@ -579,9 +580,18 @@ final class ColumnExtractor
         }
 
         $operator = $tokens[$column['next']] ?? null;
+        $operand = array_slice($tokens, $column['next'] + 1);
 
-        if ($operator === null || $operator['kind'] !== 'operator' || ! in_array($operator['value'], $not ? self::EQUALITY : ['!=', '<>'], true)
-            || ! $this->constant(array_slice($tokens, $column['next'] + 1))) {
+        $negated = match (true) {
+            $operator === null => false,
+            ! $not && $operator['value'] === 'NOT IN' && in_array($operator['kind'], ['keyword', 'function'], true) => ($operand[0]['kind'] ?? null) === 'open'
+                && $this->closing($operand, 0) === count($operand) - 1
+                && $this->constant(array_slice($operand, 1, -1)),
+            default => $operator['kind'] === 'operator' && in_array($operator['value'], $not ? self::EQUALITY : ['!=', '<>'], true)
+                && $this->constant($operand),
+        };
+
+        if (! $negated) {
             return false;
         }
 

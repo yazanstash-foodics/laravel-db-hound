@@ -78,7 +78,7 @@ final class TableColumns
     public ?string $sortClause = null;
 
     /**
-     * Negated predicates (`!=`, `<>`, `NOT column = value`): they match
+     * Negated predicates (`!=`, `<>`, `NOT column = value`, `NOT IN`): they match
      * nearly every row, so an index would barely narrow them.
      *
      * @var list<string>

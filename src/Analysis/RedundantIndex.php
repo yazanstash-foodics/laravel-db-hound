@@ -23,13 +23,19 @@ final readonly class RedundantIndex
 
     /**
      * The redundant indexes among a table's, each with the index covering
-     * it. Only a visible, non-unique index other than the primary key can
-     * be redundant: a unique one enforces a constraint, a FULLTEXT or SPATIAL
-     * one serves no lookup a B-tree does, and an invisible one serves none.
-     * It is covered by a visible index of its type with the same columns in
-     * the same order (of two non-unique ones, the first by name is kept), or
-     * by a visible B-tree whose declared columns it is a strict left prefix
-     * of. Of several covering ones, the one with the most columns comes
+     * it. Only a visible index other than the primary key can be redundant:
+     * a FULLTEXT or SPATIAL one serves no lookup a B-tree does, and an
+     * invisible one serves none. A non-unique one is covered by a visible
+     * index of its type with the same columns in the same order (of two
+     * non-unique ones, the first by name is kept), or by a visible B-tree
+     * whose declared columns it is a strict left prefix of. A unique one
+     * enforces a constraint, so only the primary key or another visible
+     * unique index of its type with the same columns in the same order
+     * covers it, keeping that constraint (of two unique ones, the first by
+     * name is kept). On a table without a primary key no unique index is
+     * redundant: InnoDB clusters the rows on its first NOT NULL unique index,
+     * which the index list does not tell apart, and dropping that one needs
+     * a full table copy. Of several covering ones, the one with the most columns comes
      * first (the one an engineer keeps when dropping every redundant one),
      * then the primary key, a unique one, and the first by name.
      *
@@ -47,9 +53,10 @@ final readonly class RedundantIndex
     public static function among(string $connection, string $table, array $indexes, PrimaryKey $primaryKey = new PrimaryKey): array
     {
         $redundant = [];
+        $hasPrimary = array_any($indexes, fn (Index $index) => $index->isPrimary());
 
         foreach ($indexes as $index) {
-            if ($index->unique || $index->isPrimary() || ! $index->visible || in_array(strtoupper($index->type), ['FULLTEXT', 'SPATIAL'], true)) {
+            if ($index->isPrimary() || ! $index->visible || in_array(strtoupper($index->type), ['FULLTEXT', 'SPATIAL'], true) || ($index->unique && ! $hasPrimary)) {
                 continue;
             }
 
@@ -64,9 +71,12 @@ final readonly class RedundantIndex
 
                 $exact = $directed
                     && $other->keyParts() === $index->keyParts()
-                    && ($other->unique || strcmp($other->name, $index->name) < 0);
+                    && ($index->unique
+                        ? $other->unique && ($other->isPrimary() || strcmp($other->name, $index->name) < 0)
+                        : $other->unique || strcmp($other->name, $index->name) < 0);
 
                 $prefix = $directed
+                    && ! $index->unique
                     && strtoupper($index->type) === 'BTREE'
                     && count($index->columns) < count($other->columns)
                     && array_slice($other->keyParts(), 0, count($index->columns)) === $index->keyParts();
