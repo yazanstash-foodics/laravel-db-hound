@@ -8,6 +8,9 @@ namespace Foodics\DbHound\Analysis;
  */
 final class Suggestion
 {
+    /** The characters of an UPDATE's SQL a note quotes. */
+    public const SQL_IN_NOTE = 200;
+
     /**
      * The served Fingerprints, highest impact first.
      *
@@ -52,6 +55,15 @@ final class Suggestion
      * How far the served Fingerprints fix the order of the columns.
      */
     private ColumnOrder $order;
+
+    /**
+     * The columns left out of the index for UPDATEs writing them: the
+     * UPDATEs, and the served Fingerprints it was left out for, with how
+     * often each ran.
+     *
+     * @var array<string, array{writers: array<string, int>, for: array<string, int>}>
+     */
+    private array $leftOut = [];
 
     /**
      * @param  list<string>  $columns  the columns the served queries need, in index order; the proposed ones leave out the trailing primary key columns InnoDB appends anyway
@@ -297,9 +309,114 @@ final class Suggestion
             $this->flag([], $note);
         }
 
+        foreach ($other->leftOut as $column => ['writers' => $writers, 'for' => $for]) {
+            foreach ($for as $fingerprint => $count) {
+                $this->leftOut($column, $writers, $fingerprint, $count);
+            }
+        }
+
         foreach ($other->served as $fingerprint => [$count, $totalMs, $maxMs, $access, $plan]) {
             $this->serve($fingerprint, $count, $totalMs, $maxMs, $access, $plan);
         }
+    }
+
+    /**
+     * Take over the Fingerprints, reasons and notes of a Suggestion on the
+     * same table whose queries this one's index serves through its leading
+     * column alone, which finds only a handful of rows: they check their
+     * other predicates on those rows. Its columns stay as they are, the
+     * first `$fixed` of them (those the other queries need in that order to
+     * keep their sort) and those the other queries seek on fixed in their
+     * order, so extending an existing index never moves them, and a note
+     * names the other predicates, and the column type when only it, not
+     * statistics, says the leading column finds a handful of rows
+     * (`$assumedType`).
+     */
+    public function serveThrough(self $other, int $fixed = 1, ?string $assumedType = null): void
+    {
+        $leading = $this->columns[0];
+
+        // The columns the other queries seek on: this index's first ones they filter or sort on.
+        $sought = 0;
+
+        while (isset($this->columns[$sought]) && in_array($this->columns[$sought], $other->columns, true)) {
+            $sought++;
+        }
+
+        $this->narrow(ColumnOrder::fixed(array_slice($this->columns, 0, max(1, $fixed, $sought))));
+
+        $checked = array_values(array_diff($other->columns, array_slice($this->columns, 0, $sought)));
+        $several = count($other->fingerprints) > 1;
+
+        $this->flag($other->reasons, sprintf(
+            'also serves %s, which would need `(%s)`: `%s` finds only a handful of rows%s, so %s other predicates%s are checked on the rows it finds rather than in a second index that leads with it.',
+            implode('; ', array_map(fn (string $sql) => '`` '.self::shortened($sql).' ``', $other->fingerprints)),
+            implode(', ', $other->columns),
+            $leading,
+            $assumedType === null ? '' : ' (assumed from the column type, `'.$assumedType.'`, as no index statistics db-hound trusts measure it)',
+            $several ? 'their' : 'its',
+            $checked === [] ? '' : ' ('.implode(', ', array_map(fn (string $column) => '`'.$column.'`', $checked)).')',
+        ));
+
+        foreach ($other->notes as $note) {
+            $this->flag([], $note);
+        }
+
+        foreach ($other->leftOut as $column => ['writers' => $writers, 'for' => $for]) {
+            foreach ($for as $fingerprint => $count) {
+                $this->leftOut($column, $writers, $fingerprint, $count);
+            }
+        }
+
+        foreach ($other->served as $fingerprint => [$count, $totalMs, $maxMs, $access, $plan]) {
+            $this->serve($fingerprint, $count, $totalMs, $maxMs, $access, $plan);
+        }
+    }
+
+    /**
+     * Note that the index leaves out `$column`, which `$writers` write, for
+     * the served `$fingerprint`, which runs `$count` times.
+     *
+     * @param  array<string, int>  $writers  UPDATE SQL => runs
+     */
+    public function leftOut(string $column, array $writers, string $fingerprint, int $count): void
+    {
+        $this->leftOut[$column]['writers'] = ($this->leftOut[$column]['writers'] ?? []) + $writers;
+        $this->leftOut[$column]['for'][$fingerprint] = $count;
+    }
+
+    /**
+     * Say, for each column left out for UPDATEs writing it that the index
+     * does not have after all, which UPDATEs write it, how often, and how
+     * often the served queries that need it run. Done once the Suggestion
+     * is final, it having absorbed every other it serves.
+     */
+    public function noteLeftOut(): void
+    {
+        foreach ($this->leftOut as $column => ['writers' => $writers, 'for' => $for]) {
+            if (in_array($column, $this->columns, true)) {
+                continue;
+            }
+
+            uksort($writers, fn (string $a, string $b) => [$writers[$b], $a] <=> [$writers[$a], $b]);
+
+            $this->flag([], sprintf(
+                'leaves out `%s`: UPDATEs write it %s times, at least as often as the queries served that need it run (%s times), and an index on it would be maintained on each of those writes: %s.',
+                $column,
+                number_format(array_sum($writers)),
+                number_format(array_sum($for)),
+                implode('; ', array_map(fn (string $sql, int $runs) => '`` '.self::shortened($sql).' `` ('.number_format($runs).' times)', array_keys($writers), $writers)),
+            ));
+        }
+    }
+
+    /**
+     * The SQL cut to its first `SQL_IN_NOTE` characters, so a bulk UPDATE
+     * does not fill the Report.
+     */
+    private static function shortened(string $sql): string
+    {
+        return mb_strlen($sql) > self::SQL_IN_NOTE ? mb_substr($sql, 0, self::SQL_IN_NOTE).'…' : $sql;
     }
 
     private function narrow(ColumnOrder $prefix): void

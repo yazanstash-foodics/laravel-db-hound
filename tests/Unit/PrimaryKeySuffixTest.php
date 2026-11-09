@@ -17,7 +17,7 @@ it('leaves out the primary key InnoDB appends to every secondary index', functio
         ]],
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->indexName()], $result->suggestions))
         ->toBe([[['merchant_id', 'created_at'], 'branches_merchant_id_created_at_index']]);
 });
@@ -35,7 +35,7 @@ it('leaves out the trailing columns of a composite primary key in primary key or
         ]],
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => $suggestion->columns, $result->suggestions))->toBe([$columns]);
 })->with([
     'the primary key columns the index leaves out, in order' => [
@@ -69,7 +69,7 @@ it('drops a candidate an existing index covers once InnoDB appends the primary k
     );
 
     expect($result->suggestions)->toBe([])
-        ->and($result->unparsed)->toBe([]);
+        ->and(unsuggested($result))->toBe([]);
 });
 
 it('does not treat an existing index as covering a candidate whose primary key column it puts after another column', function () {
@@ -84,7 +84,7 @@ it('does not treat an existing index as covering a candidate whose primary key c
         ]],
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->extends?->name], $result->suggestions))
         ->toBe([[['merchant_id'], null]]);
 });
@@ -151,7 +151,7 @@ it('consolidates a candidate with a trailing primary key into one without it, bu
         stats: [$byIdToo => [10, 3000.0, 400.0], $byDate => [10, 2000.0, 400.0], $byTotal => [10, 1000.0, 400.0]],
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->fingerprints], $result->suggestions))
         ->toBe([
             [['customer_id', 'created_at'], [$byIdToo, $byDate]],
@@ -167,7 +167,7 @@ it('leaves the trailing primary key out of the equality → sort → range alter
         millionOrders(['customer_id' => 90_000]),
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->notes], $result->suggestions))
         ->toBe([[['customer_id'], ['filesort remains; consider `(customer_id, created_at)` if the range on `id` matches most rows.']]]);
 });
@@ -185,7 +185,7 @@ it('keeps the trailing primary key on a table whose engine does not append it to
         ]],
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->indexName()], $result->suggestions))
         ->toBe([[['merchant_id', 'created_at', 'id'], 'branches_merchant_id_created_at_id_index']]);
 });
@@ -203,7 +203,7 @@ it('does not treat an existing index as covering a trailing primary key on a tab
         ]],
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->extends?->name], $result->suggestions))
         ->toBe([[['merchant_id', 'created_at', 'id'], 'branches_merchant_id_created_at_index']]);
 });

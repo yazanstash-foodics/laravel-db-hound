@@ -39,7 +39,7 @@ it('extends the index EXPLAIN reports as key, reordering the equality columns to
         ]),
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->extends?->name], $result->suggestions))
         ->toBe([[['merchant_id', 'is_approved', 'created_at'], 'branches_merchant_id_index']]);
 });
@@ -56,7 +56,7 @@ it('extends the longest prefix index when the index EXPLAIN reports as key is no
         ]),
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->extends?->name], $result->suggestions))
         ->toBe([[['status', 'is_approved', 'merchant_id', 'created_at'], 'branches_status_is_approved_index']]);
 });
@@ -72,7 +72,7 @@ it('extends, among equally long prefix indexes, the one whose first column is th
         ], ['id' => 20_000, 'merchant_id' => 2_500, 'is_approved' => 900]),
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->extends?->name], $result->suggestions))
         ->toBe([[['merchant_id', 'is_approved'], 'branches_merchant_id_index']]);
 });
@@ -93,7 +93,7 @@ it('extends the index the plan of the most impactful served Fingerprint reads, a
         stats: [$latest => [100, 9000.0, 300.0], $named => [10, 100.0, 20.0]],
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->extends?->name, $suggestion->fingerprints], $result->suggestions))
         ->toBe([[['merchant_id', 'is_approved', 'created_at', 'name'], 'branches_merchant_id_index', [$latest, $named]]]);
 });
@@ -166,7 +166,7 @@ it('extends the longest prefix when a Suggestion with more impact already extend
         stats: [$byStatus => [100, 9000.0, 300.0], $byName => [10, 100.0, 20.0]],
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->columns, $suggestion->extends?->name, $suggestion->extendedBecause], $result->suggestions))
         ->toBe([
             [['merchant_id', 'status', 'created_at'], 'branches_merchant_id_index', ExtendedBecause::UsedByPlan],

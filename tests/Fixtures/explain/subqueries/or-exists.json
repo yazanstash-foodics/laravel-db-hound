@@ -1,0 +1,69 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "201.75"
+    },
+    "table": {
+      "table_name": "merchants",
+      "access_type": "ALL",
+      "rows_examined_per_scan": 2000,
+      "rows_produced_per_join": 200,
+      "filtered": "10.00",
+      "cost_info": {
+        "read_cost": "181.75",
+        "eval_cost": "20.00",
+        "prefix_cost": "201.75",
+        "data_read_per_join": "84K"
+      },
+      "used_columns": [
+        "id",
+        "supply",
+        "deleted_at"
+      ],
+      "attached_condition": "((exists(/* select#2 */ select 1 from `db_hound_fixtures`.`adjustments` where ((`db_hound_fixtures`.`adjustments`.`type` = 'supply') and (`db_hound_fixtures`.`merchants`.`id` = `db_hound_fixtures`.`adjustments`.`merchant_id`))) or ((json_extract(`db_hound_fixtures`.`merchants`.`supply`,'$.enabled') is not null) and (json_type(json_extract(`db_hound_fixtures`.`merchants`.`supply`,'$.enabled')) <> 'NULL'))) and (`db_hound_fixtures`.`merchants`.`deleted_at` is null))",
+      "attached_subqueries": [
+        {
+          "dependent": true,
+          "cacheable": false,
+          "query_block": {
+            "select_id": 2,
+            "cost_info": {
+              "query_cost": "0.52"
+            },
+            "table": {
+              "table_name": "adjustments",
+              "access_type": "ref",
+              "possible_keys": [
+                "adjustments_merchant_id_index",
+                "adjustments_type_index"
+              ],
+              "key": "adjustments_merchant_id_index",
+              "used_key_parts": [
+                "merchant_id"
+              ],
+              "key_length": "8",
+              "ref": [
+                "db_hound_fixtures.merchants.id"
+              ],
+              "rows_examined_per_scan": 1,
+              "rows_produced_per_join": 0,
+              "filtered": "25.00",
+              "cost_info": {
+                "read_cost": "0.38",
+                "eval_cost": "0.04",
+                "prefix_cost": "0.53",
+                "data_read_per_join": "39"
+              },
+              "used_columns": [
+                "merchant_id",
+                "type"
+              ],
+              "attached_condition": "(`db_hound_fixtures`.`adjustments`.`type` = 'supply')"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "17.50"
+        },
+        "table": {
+            "table_name": "payments",
+            "access_type": "ref",
+            "possible_keys": [
+                "payments_merchant_id_index"
+            ],
+            "key": "payments_merchant_id_index",
+            "used_key_parts": [
+                "merchant_id"
+            ],
+            "key_length": "8",
+            "ref": [
+                "const"
+            ],
+            "rows_examined_per_scan": 50,
+            "rows_produced_per_join": 50,
+            "filtered": "100.00",
+            "cost_info": {
+                "read_cost": "12.50",
+                "eval_cost": "5.00",
+                "prefix_cost": "17.50",
+                "data_read_per_join": "16K"
+            },
+            "used_columns": [
+                "id",
+                "merchant_id",
+                "status",
+                "amount",
+                "meta",
+                "note",
+                "created_at"
+            ],
+            "attached_condition": "(lower(`db_hound_shapes`.`payments`.`status`) = 'paid')"
+        }
+    }
+}

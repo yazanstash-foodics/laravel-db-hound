@@ -5,10 +5,12 @@ use Foodics\DbHound\Analysis\Analyzer;
 use Foodics\DbHound\Analysis\Index;
 use Foodics\DbHound\Analysis\Plan;
 use Foodics\DbHound\Analysis\Qualification;
+use Foodics\DbHound\Analysis\UnsuggestedQuery;
 use Foodics\DbHound\Capture\QueryAggregate;
 use Foodics\DbHound\Capture\Recorder;
 use Foodics\DbHound\Contracts\Driver;
 use Foodics\DbHound\Contracts\Store;
+use Foodics\DbHound\Drivers\MySqlDriver;
 use Foodics\DbHound\Report\ReportContext;
 use Foodics\DbHound\Tests\IntegrationTestCase;
 use Foodics\DbHound\Tests\TestCase;
@@ -160,11 +162,11 @@ function reportContext(): ReportContext
 /**
  * A Driver over tables shaped like those of the staging Report the ticket
  * cites, with per-column cardinality as MySQL index statistics would give it.
- * Each table's primary key is `id` unless `primary` names its columns, and
- * its engine InnoDB unless `engine` names another.
+ * Each table's primary key is `id` unless `primary` names its columns (null
+ * for a table without one), and its engine InnoDB unless `engine` names another.
  *
  * @param  array<string, Plan>  $plans  SQL => plan
- * @param  array<string, array{rows: int, columns: array<string, string>, engine?: string, primary?: list<string>, indexes?: list<Index>, cardinality?: array<string, int>}>  $tables
+ * @param  array<string, array{rows: int, columns: array<string, string>, engine?: string, primary?: ?list<string>, indexes?: list<Index>, cardinality?: array<string, int>}>  $tables
  */
 function cardinalityDriver(array $plans, array $tables): Driver
 {
@@ -184,7 +186,9 @@ function cardinalityDriver(array $plans, array $tables): Driver
 
         public function indexes(string $table): array
         {
-            return [new Index('PRIMARY', $this->tables[$table]['primary'] ?? ['id'], true), ...$this->tables[$table]['indexes'] ?? []];
+            $primary = array_key_exists('primary', $this->tables[$table] ?? []) ? $this->tables[$table]['primary'] : ['id'];
+
+            return [...$primary === null ? [] : [new Index('PRIMARY', $primary, true)], ...$this->tables[$table]['indexes'] ?? []];
         }
 
         public function engine(string $table): string
@@ -215,7 +219,7 @@ function cardinalityDriver(array $plans, array $tables): Driver
  * and max ms `$stats` gives it, else 10 runs of 100 ms on average.
  *
  * @param  array<string, Plan>  $plans  SQL => plan
- * @param  array<string, array{rows: int, columns: array<string, string>, engine?: string, primary?: list<string>, indexes?: list<Index>, cardinality?: array<string, int>}>  $tables
+ * @param  array<string, array{rows: int, columns: array<string, string>, engine?: string, primary?: ?list<string>, indexes?: list<Index>, cardinality?: array<string, int>}>  $tables
  * @param  array<string, array{int, float, float}>  $stats  SQL => [count, total ms, max ms]
  */
 function analyzeWithCardinality(array $plans, array $tables, ?Analyzer $analyzer = null, array $stats = []): AnalysisResult
@@ -254,4 +258,52 @@ function millionOrders(array $cardinality = []): array
         ],
         'cardinality' => $cardinality,
     ]];
+}
+
+/**
+ * A Laravel `latestOfMany` eager load of personal access tokens, as the
+ * staging Report captured it (7376bced).
+ */
+const LATEST_OF_MANY = 'select `personal_access_tokens`.* from `personal_access_tokens` inner join (select max(`personal_access_tokens`.`id`) as `id_aggregate`, min(`personal_access_tokens`.`last_used_at`) as `last_used_at_aggregate`, `personal_access_tokens`.`tokenable_id`, `personal_access_tokens`.`tokenable_type` from `personal_access_tokens` inner join (select max(`personal_access_tokens`.`last_used_at`) as `last_used_at_aggregate`, `personal_access_tokens`.`tokenable_id`, `personal_access_tokens`.`tokenable_type` from `personal_access_tokens` where `personal_access_tokens`.`tokenable_id` in (?) and `personal_access_tokens`.`tokenable_type` = ? group by `personal_access_tokens`.`tokenable_id`, `personal_access_tokens`.`tokenable_type`) as `latestOfMany` on `latestOfMany`.`last_used_at_aggregate` = `personal_access_tokens`.`last_used_at` and `latestOfMany`.`tokenable_type` = `personal_access_tokens`.`tokenable_type` and `latestOfMany`.`tokenable_id` = `personal_access_tokens`.`tokenable_id` group by `personal_access_tokens`.`tokenable_id`, `personal_access_tokens`.`tokenable_type`) as `latestOfMany` on `latestOfMany`.`id_aggregate` = `personal_access_tokens`.`id` and `latestOfMany`.`last_used_at_aggregate` = `personal_access_tokens`.`last_used_at` and `latestOfMany`.`tokenable_type` = `personal_access_tokens`.`tokenable_type` and `latestOfMany`.`tokenable_id` = `personal_access_tokens`.`tokenable_id`';
+
+/**
+ * A plan recorded from MySQL 8.0 for the staging shapes (tests/Fixtures/explain/staging).
+ */
+function stagingPlan(string $name): Plan
+{
+    return MySqlDriver::planFromJson((string) file_get_contents(__DIR__.'/Fixtures/explain/staging/'.$name.'.json'));
+}
+
+/**
+ * @return list<array{string, list<string>}>
+ */
+function suggestedIndexes(AnalysisResult $result): array
+{
+    return array_map(fn ($suggestion) => [$suggestion->table, $suggestion->columns], $result->suggestions);
+}
+
+/**
+ * @return list<string>
+ */
+function unparsedReasons(AnalysisResult $result): array
+{
+    return array_map(fn ($unparsed) => $unparsed->reason, $result->unparsed);
+}
+
+/**
+ * @return list<string>
+ */
+function skippedReasons(AnalysisResult $result): array
+{
+    return array_map(fn ($skipped) => $skipped->reason, $result->skipped);
+}
+
+/**
+ * Every flagged Fingerprint that got no Suggestion, skipped or unparsed.
+ *
+ * @return list<UnsuggestedQuery>
+ */
+function unsuggested(AnalysisResult $result): array
+{
+    return [...$result->skipped, ...$result->unparsed];
 }

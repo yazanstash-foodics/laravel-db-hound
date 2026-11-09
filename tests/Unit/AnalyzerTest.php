@@ -94,7 +94,7 @@ it('suggests an index on the equality column of a full-scan query', function () 
         fakeDriver([$sql => fullScan()], [new Index('PRIMARY', ['id'], true)]),
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1);
 
     $suggestion = $result->suggestions[0];
@@ -120,7 +120,7 @@ it('suggests nothing when the plan uses an index', function () {
         fakeDriver([$sql => new Plan([new TableAccess('orders', 'ref', 'orders_branch_id_index', 120)])]),
     );
 
-    expect($result->suggestions)->toBe([])->and($result->unparsed)->toBe([]);
+    expect($result->suggestions)->toBe([])->and(unsuggested($result))->toBe([]);
 });
 
 it('does not suggest an index an existing index already covers as a left prefix', function () {
@@ -333,7 +333,10 @@ it('lists a Fingerprint whose schema inspection fails as unparsed and still anal
         ->and($result->suggestions[0]->table)->toBe('orders')
         ->and($result->unparsed)->toHaveCount(1)
         ->and($result->unparsed[0]->sql)->toBe($broken)
-        ->and($result->unparsed[0]->reason)->toBe('inspecting its tables failed (QueryException, SQLSTATE HY000)');
+        // Without a Sample, the column types are looked up to EXPLAIN it at all; otherwise the plan's table is what fails.
+        ->and($result->unparsed[0]->reason)->toBe($failing === 'columnTypes' && ! $sampled
+            ? 'inspecting its tables failed (QueryException, SQLSTATE HY000)'
+            : 'full scan on `archive`, but inspecting it failed (QueryException, SQLSTATE HY000)');
 })->with(['indexes', 'engine', 'rowCount', 'columnTypes', 'cardinality'])->with(['with a Sample' => true, 'without a Sample' => false]);
 
 /**
@@ -418,7 +421,7 @@ it('explains an UPDATE as the SELECT of its WHERE, without the SET bindings', fu
         'sql' => "select * from `orders` where `status` = ? -- set ?\n",
         'bindings' => ['where-value'],
     ]])
-        ->and($result->unparsed)->toBe([])
+        ->and(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->columns)->toBe(['status'])
         ->and($result->suggestions[0]->fingerprints)->toBe(['update `orders` set `note` = ?, `total` = `total` + ? where `status` = ?']);
@@ -476,7 +479,7 @@ it('does not explain statements that are not a SELECT, UPDATE or DELETE', functi
 
     expect($driver->explained)->toBe([])
         ->and($result->suggestions)->toBe([])
-        ->and($result->unparsed)->toBe([]);
+        ->and(unsuggested($result))->toBe([]);
 })->with([
     'insert' => 'insert into `orders` (`status`) values (?)',
     'replace' => 'replace into `orders` (`status`) values (?)',
@@ -618,7 +621,7 @@ it('suggests an index for a Fingerprint without a Sample', function () {
     ], $driver);
 
     expect($driver->explained)->toBe([['sql' => 'select * from `orders` where `branch_id` = ?', 'bindings' => [1]]])
-        ->and($result->unparsed)->toBe([])
+        ->and(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->columns)->toBe(['branch_id']);
 });

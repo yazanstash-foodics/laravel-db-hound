@@ -1,0 +1,41 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "17.50"
+        },
+        "table": {
+            "table_name": "orders",
+            "access_type": "ref",
+            "possible_keys": [
+                "orders_merchant_id_index"
+            ],
+            "key": "orders_merchant_id_index",
+            "used_key_parts": [
+                "merchant_id"
+            ],
+            "key_length": "8",
+            "ref": [
+                "const"
+            ],
+            "rows_examined_per_scan": 50,
+            "rows_produced_per_join": 0,
+            "filtered": "1.00",
+            "cost_info": {
+                "read_cost": "12.50",
+                "eval_cost": "0.05",
+                "prefix_cost": "17.50",
+                "data_read_per_join": "56"
+            },
+            "used_columns": [
+                "id",
+                "merchant_id",
+                "status",
+                "total",
+                "archived_at",
+                "deleted_at"
+            ],
+            "attached_condition": "((`db_hound_shapes`.`orders`.`status` = 'paid') and (`db_hound_shapes`.`orders`.`deleted_at` is null))"
+        }
+    }
+}

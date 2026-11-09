@@ -1,0 +1,37 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "7.65"
+        },
+        "ordering_operation": {
+            "using_filesort": false,
+            "table": {
+                "table_name": "audit_logs",
+                "access_type": "index",
+                "key": "audit_logs_created_at_index",
+                "used_key_parts": [
+                    "created_at"
+                ],
+                "key_length": "4",
+                "rows_examined_per_scan": 15,
+                "rows_produced_per_join": 7,
+                "filtered": "10.00",
+                "backward_index_scan": true,
+                "cost_info": {
+                    "read_cost": "6.91",
+                    "eval_cost": "0.74",
+                    "prefix_cost": "7.65",
+                    "data_read_per_join": "2K"
+                },
+                "used_columns": [
+                    "id",
+                    "status",
+                    "type",
+                    "created_at"
+                ],
+                "attached_condition": "(`db_hound_shapes`.`audit_logs`.`status` = 'failed')"
+            }
+        }
+    }
+}

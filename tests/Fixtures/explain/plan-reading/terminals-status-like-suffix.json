@@ -1,0 +1,37 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "0.70"
+        },
+        "table": {
+            "table_name": "terminals",
+            "access_type": "ref",
+            "possible_keys": [
+                "terminals_status_index"
+            ],
+            "key": "terminals_status_index",
+            "used_key_parts": [
+                "status"
+            ],
+            "key_length": "82",
+            "ref": [
+                "const"
+            ],
+            "rows_examined_per_scan": 2,
+            "rows_produced_per_join": 0,
+            "filtered": "33.33",
+            "cost_info": {
+                "read_cost": "0.50",
+                "eval_cost": "0.07",
+                "prefix_cost": "0.70",
+                "data_read_per_join": "842"
+            },
+            "used_columns": [
+                "status",
+                "terminal_id8"
+            ],
+            "attached_condition": "(`db_hound_shapes`.`terminals`.`terminal_id8` like '%0001')"
+        }
+    }
+}

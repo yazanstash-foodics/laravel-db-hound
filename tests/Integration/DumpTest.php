@@ -40,7 +40,31 @@ afterEach(function () {
     Schema::dropIfExists('hound_orders');
     Schema::dropIfExists('hound_gone');
     Schema::dropIfExists('hound_tokens');
+    Schema::dropIfExists('hound_items');
+    Schema::dropIfExists('hound_notes');
 });
+
+/**
+ * Two tables a query on `hound_orders` reads through subqueries: its items,
+ * and the notes on them.
+ */
+function createItemsAndNotes(): void
+{
+    Schema::dropIfExists('hound_items');
+    Schema::create('hound_items', function (Blueprint $table) {
+        $table->id();
+        $table->unsignedBigInteger('order_id');
+        $table->string('sku');
+    });
+
+    Schema::dropIfExists('hound_notes');
+    Schema::create('hound_notes', function (Blueprint $table) {
+        $table->id();
+        $table->unsignedBigInteger('item_id');
+        $table->unsignedBigInteger('order_id');
+        $table->string('body');
+    });
+}
 
 /**
  * The Dump files db-hound wrote, by path on the local disk.
@@ -148,8 +172,8 @@ it('includes the schema context and impact stats of each Fingerprint', function 
         ->and($line['schema'])->toHaveKeys(['hound_orders'])->toHaveCount(1)
         ->and($line['schema']['hound_orders']['row_count'])->toBeGreaterThan(1000)
         ->and($line['schema']['hound_orders']['indexes'])->toEqualCanonicalizing([
-            ['name' => 'PRIMARY', 'columns' => ['id'], 'unique' => true, 'type' => 'BTREE', 'visible' => true],
-            ['name' => 'hound_orders_branch_id_index', 'columns' => ['branch_id'], 'unique' => false, 'type' => 'BTREE', 'visible' => true],
+            ['name' => 'PRIMARY', 'columns' => ['id'], 'unique' => true, 'type' => 'BTREE', 'visible' => true, 'prefix_lengths' => [], 'descending' => []],
+            ['name' => 'hound_orders_branch_id_index', 'columns' => ['branch_id'], 'unique' => false, 'type' => 'BTREE', 'visible' => true, 'prefix_lengths' => [], 'descending' => []],
         ])
         ->and($line['schema']['hound_orders']['columns'])->toBe([
             'id' => 'bigint unsigned',
@@ -597,4 +621,139 @@ it('has every field of a Dump line documented in the README', function () {
 
     expect($fields)->toContain('`sample.bindings`', '`stats.impact`', '`schema.<table>.row_count`', '`visible`')
         ->and($undocumented)->toBe([]);
+});
+
+it('includes the schema of every table the query reads, at any depth, keyed by its real name', function (string $sql, array $tables) {
+    createItemsAndNotes();
+    persistDumpFingerprint($sql, count: 100, avgMs: 60.0);
+
+    $line = runDump()[0];
+
+    expect(array_keys($line['schema']))->toEqualCanonicalizing($tables)
+        ->and($line['schema_error'])->toBeNull();
+})->with([
+    'a SELECT-list subquery' => [
+        'select `hound_orders`.*, (select count(*) from `hound_items` where `hound_items`.`order_id` = `hound_orders`.`id` and `sku` = ?) as `items_count` from `hound_orders` where `branch_id` = ?',
+        ['hound_orders', 'hound_items'],
+    ],
+    'a WHERE EXISTS' => [
+        'select * from `hound_orders` where exists (select * from `hound_items` where `hound_orders`.`id` = `hound_items`.`order_id` and `sku` = ?)',
+        ['hound_orders', 'hound_items'],
+    ],
+    'a WHERE column IN (select …)' => [
+        'select * from `hound_orders` where `id` in (select `order_id` from `hound_items` where `sku` = ?)',
+        ['hound_orders', 'hound_items'],
+    ],
+    'a derived table, its table aliased' => [
+        'select * from (select `i`.* from `hound_items` as `i` where `i`.`sku` = ?) as `laravel_table` inner join `hound_orders` on `hound_orders`.`id` = `laravel_table`.`order_id`',
+        ['hound_orders', 'hound_items'],
+    ],
+    'a two-level nested subquery' => [
+        'select * from `hound_orders` where exists (select * from `hound_items` where `hound_items`.`order_id` = `hound_orders`.`id` and exists (select * from `hound_notes` where `hound_notes`.`item_id` = `hound_items`.`id` and `body` = ?))',
+        ['hound_orders', 'hound_items', 'hound_notes'],
+    ],
+    'a UNION inside an IN subquery' => [
+        'select * from `hound_orders` where `id` in (select `order_id` from `hound_items` where `sku` = ? union select `order_id` from `hound_notes` where `body` = ?)',
+        ['hound_orders', 'hound_items', 'hound_notes'],
+    ],
+    'a UNION inside a derived table' => [
+        'select count(*) as `aggregate` from (select `order_id` from `hound_items` union all select `order_id` from `hound_notes`) as `laravel_table`',
+        ['hound_items', 'hound_notes'],
+    ],
+    'an ORDER BY subquery' => [
+        'select * from `hound_orders` where `branch_id` = ? order by (select count(*) from `hound_items` where `hound_items`.`order_id` = `hound_orders`.`id`) desc',
+        ['hound_orders', 'hound_items'],
+    ],
+    'a nested join' => [
+        'select * from `hound_orders` left join (`hound_items` inner join `hound_notes` on `hound_notes`.`item_id` = `hound_items`.`id`) on `hound_items`.`order_id` = `hound_orders`.`id` where `hound_orders`.`branch_id` = ?',
+        ['hound_orders', 'hound_items', 'hound_notes'],
+    ],
+    'a table read only in a subquery' => [
+        'select exists(select * from `hound_items` where (`id` = ? and `sku` = ?)) as `exists`',
+        ['hound_items'],
+    ],
+]);
+
+it('says which tables the query names that its schema is missing, rather than leave them out silently', function () {
+    createItemsAndNotes();
+    // EXPLAIN reads the rows the UPDATE touches: the subquery its SET runs is no part of that SELECT.
+    persistDumpFingerprint('update `hound_orders` set `customer_email` = (select max(`sku`) from `hound_items`) where `id` = ?', count: 100, avgMs: 60.0);
+
+    $line = runDump()[0];
+
+    expect(array_keys($line['schema']))->toBe(['hound_orders'])
+        ->and($line['schema_error'])->toBe('`hound_items` is named in the query, but db-hound found no reference to it in the statement it explains, so its schema is missing');
+});
+
+it('looks up each table\'s schema once for the whole Dump, however many Fingerprints read it', function () {
+    foreach (['`branch_id` = ?', '`branch_id` > ?', '`customer_email` = ?', '`customer_email` like ?', '`id` = ?'] as $predicate) {
+        persistDumpFingerprint("select * from `hound_orders` where {$predicate}", count: 100, avgMs: 60.0);
+    }
+
+    $lookups = [];
+    DB::listen(function ($query) use (&$lookups) {
+        foreach (['SELECT ENGINE FROM', 'SELECT TABLE_ROWS FROM', 'COLUMN_NAME, CARDINALITY', 'COLUMN_NAME, COLUMN_TYPE', 'SELECT * FROM information_schema.STATISTICS'] as $lookup) {
+            if (str_contains($query->sql, $lookup)) {
+                $lookups[$lookup] = ($lookups[$lookup] ?? 0) + 1;
+            }
+        }
+    });
+
+    expect(runDump())->toHaveCount(5)
+        ->and($lookups)->toEqual([
+            'SELECT * FROM information_schema.STATISTICS' => 1,
+            'SELECT TABLE_ROWS FROM' => 1,
+            'SELECT ENGINE FROM' => 1,
+            'COLUMN_NAME, COLUMN_TYPE' => 1,
+            'COLUMN_NAME, CARDINALITY' => 1,
+        ]);
+});
+
+it('names no column as a missing table when STRAIGHT_JOIN is a SELECT modifier', function (string $sql, array $tables) {
+    createItemsAndNotes();
+    persistDumpFingerprint($sql, count: 100, avgMs: 60.0);
+
+    $line = runDump()[0];
+
+    expect(array_keys($line['schema']))->toEqualCanonicalizing($tables)
+        ->and($line['schema_error'])->toBeNull();
+})->with([
+    'before a column' => [
+        'select straight_join `id` from `hound_orders` where `branch_id` = ?',
+        ['hound_orders'],
+    ],
+    'before a qualified column, with a join' => [
+        'select straight_join `hound_orders`.`id` from `hound_orders` inner join `hound_items` on `hound_items`.`order_id` = `hound_orders`.`id` where `branch_id` = ?',
+        ['hound_orders', 'hound_items'],
+    ],
+    'after DISTINCT, in a subquery' => [
+        'select * from `hound_orders` where `id` in (select distinct straight_join `order_id` from `hound_items` where `sku` = ?)',
+        ['hound_orders', 'hound_items'],
+    ],
+]);
+
+it('includes each table\'s engine and per-column cardinality, and each index\'s prefix lengths and descending key parts', function () {
+    DB::statement('ALTER TABLE `hound_orders` ADD INDEX `hound_orders_email_prefix_index` (`customer_email`(8), `branch_id` DESC)');
+    DB::statement('ANALYZE TABLE hound_orders');
+    Schema::create('hound_tokens', function (Blueprint $table) {
+        $table->string('token');
+    });
+    persistDumpFingerprint('select * from `hound_orders` inner join `hound_tokens` on `hound_tokens`.`token` = `hound_orders`.`customer_email` where `branch_id` = ?', count: 100, avgMs: 60.0);
+
+    $line = runDump()[0];
+    $orders = $line['schema']['hound_orders'];
+    $indexes = array_column($orders['indexes'], null, 'name');
+
+    expect($orders['engine'])->toBe('InnoDB')
+        ->and($orders['cardinality'])->toHaveKeys(['id', 'branch_id', 'customer_email'])
+        ->and($orders['cardinality']['branch_id'])->toBeInt()->toBeGreaterThan(0)
+        ->and($indexes['hound_orders_email_prefix_index']['prefix_lengths'])->toBe(['customer_email' => 8])
+        ->and($indexes['hound_orders_email_prefix_index']['descending'])->toBe(['branch_id'])
+        ->and($indexes['PRIMARY']['prefix_lengths'])->toBe([])
+        ->and($line['schema']['hound_tokens']['engine'])->toBe('InnoDB')
+        ->and($line['schema']['hound_tokens']['cardinality'])->toBe([])
+        // Objects keyed by column, even when empty.
+        ->and(Storage::disk('local')->get(dumpFiles()[0]))
+        ->toContain('"cardinality":{}')
+        ->toContain('"prefix_lengths":{}');
 });

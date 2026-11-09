@@ -5,6 +5,7 @@ namespace Foodics\DbHound\Analysis;
 use PhpMyAdmin\SqlParser\Components\Condition;
 use PhpMyAdmin\SqlParser\Components\Expression;
 use PhpMyAdmin\SqlParser\Components\GroupKeyword;
+use PhpMyAdmin\SqlParser\Components\JoinKeyword;
 use PhpMyAdmin\SqlParser\Components\OrderKeyword;
 use PhpMyAdmin\SqlParser\Lexer;
 use PhpMyAdmin\SqlParser\Parser;
@@ -16,9 +17,10 @@ use PhpMyAdmin\SqlParser\TokenType;
  * Finds, per table reference of a SELECT, the columns it is filtered (WHERE),
  * joined (JOIN ON / USING) and sorted (ORDER BY / GROUP BY) on, classified as
  * equality, range or sort. Aliases resolve to their base table; subqueries in
- * FROM (derived tables), the SELECT list, `EXISTS (...)`, `IN (...)` and
- * comparisons are followed, with correlated columns attributed to the outer
- * table they name, and a column joined to a derived table's to that table.
+ * FROM (derived tables), the SELECT list, `EXISTS (...)`, `IN (...)`,
+ * comparisons and HAVING are followed, with correlated columns attributed to
+ * the outer table they name, and a column joined to a derived table's to
+ * that table.
  *
  * phpmyadmin/sql-parser provides the statement structure; predicates are read
  * from its tokens, splitting only top-level ANDs (anything under an OR is not
@@ -51,15 +53,23 @@ final class ColumnExtractor
     /** whether a subquery in the SELECT list is being read */
     private bool $selectList = false;
 
-    /** @var callable(string): list<string> */
+    /** whether a subquery in GROUP BY or ORDER BY is being read */
+    private bool $sorting = false;
+
+    /** @var list<int> the part (0 for the first SELECT) of each UNION whose query is being read, outermost first */
+    private array $union = [];
+
+    /** @var callable(string): ?list<string> */
     private $columnsOf;
 
-    /** @var array<string, array<string, string>> lowercased column name => as the schema spells it, per table */
+    /** @var array<string, ?array<string, string>> lowercased column name => as the schema spells it, per table; null when unknown */
     private array $columns = [];
 
     /**
-     * @param  callable(string): list<string>  $columnsOf  a base table's column names, to place
-     *                                                     unqualified columns when a query reads several tables
+     * @param  callable(string): ?list<string>  $columnsOf  a base table's column names, to place
+     *                                                      unqualified columns when a query reads several tables;
+     *                                                      null when they cannot be looked up, so the table may
+     *                                                      have any column
      *
      * @throws UnparseableSql
      */
@@ -70,22 +80,118 @@ final class ColumnExtractor
         $this->derived = [];
         $this->within = [];
         $this->selectList = false;
+        $this->sorting = false;
+        $this->union = [];
         $this->columnsOf = $columnsOf;
         $this->columns = [];
 
-        $statement = $this->parse($sql);
+        $this->query($this->parse($sql), [], []);
 
-        $this->select($statement, [], []);
+        return new ExtractedColumns($this->references, $this->unresolved, $this->derived);
+    }
 
-        foreach ($statement->union as $union) {
-            $part = $this->unionPart($union);
+    /**
+     * The tables a statement names right after FROM or a JOIN, at any
+     * depth, read from its tokens alone (no parsing), as `table` or
+     * `database.table`: a check on what `extract()` finds. A FROM within a
+     * function call (`EXTRACT(YEAR FROM …)`) names no table, nor does a JOIN
+     * before the query's FROM (the `SELECT STRAIGHT_JOIN` modifier); a
+     * derived table, a table function and `DUAL` are none; a table listed
+     * after a comma is not looked for.
+     *
+     * @return list<string>
+     */
+    public function tablesNamed(string $sql): array
+    {
+        [$tokens] = $this->tokens($sql);
+        $names = [];
+        // Whether each open parenthesis holds a query (a subquery, or a parenthesized join), outermost first.
+        $query = [true];
+        // Whether each one's FROM has been read, outermost first: a parenthesized join's tables, and an UPDATE's, need none.
+        $from = [($tokens[0]['value'] ?? null) !== 'SELECT'];
 
-            if ($part !== null) {
-                $this->select($part, [], []);
+        foreach ($tokens as $i => $token) {
+            $previous = $tokens[$i - 1] ?? null;
+
+            if ($token['kind'] === 'open') {
+                $subquery = ($tokens[$i + 1]['value'] ?? null) === 'SELECT';
+                $joined = ! $subquery && end($query) && $previous !== null
+                    && ($this->namesTable($previous, end($from)) || $previous['kind'] === 'open');
+                $query[] = $subquery || $joined;
+                $from[] = $joined;
+
+                continue;
+            }
+
+            if ($token['kind'] === 'close') {
+                array_pop($query);
+                array_pop($from);
+
+                continue;
+            }
+
+            if (! end($query) || ! $this->namesTable($token, end($from))) {
+                continue;
+            }
+
+            if ($token['value'] === 'FROM') {
+                $from[array_key_last($from)] = true;
+            }
+
+            $at = $i + 1;
+
+            while (($tokens[$at]['kind'] ?? null) === 'open' && ($tokens[$at + 1]['value'] ?? null) !== 'SELECT') {
+                $at++;
+            }
+
+            $table = $this->columnAt($tokens, $at);
+
+            if ($table !== null && ($tokens[$table['next']]['kind'] ?? null) !== 'open') {
+                $names[] = ($table['qualifier'] === null ? '' : $table['qualifier'].'.').$table['column'];
             }
         }
 
-        return new ExtractedColumns($this->references, $this->unresolved, $this->derived);
+        return array_values(array_unique($names));
+    }
+
+    /**
+     * Whether the token is a FROM, or a JOIN once the query's FROM is read.
+     *
+     * @param  array{kind: string, value: string, at: int}  $token
+     */
+    private function namesTable(array $token, bool $afterFrom): bool
+    {
+        return $token['kind'] === 'keyword' && ($token['value'] === 'FROM' || ($afterFrom && str_ends_with($token['value'], 'JOIN')));
+    }
+
+    /**
+     * A query and each part of its UNION, in the same scope.
+     *
+     * @param  list<array<string, ?TableColumns>>  $outer  enclosing scopes, innermost first
+     * @param  list<string>  $within  the aliases of the derived tables whose query this is, outermost first
+     */
+    private function query(SelectStatement $statement, array $outer, array $within): void
+    {
+        if ($statement->union === []) {
+            $this->select($statement, $outer, $within);
+
+            return;
+        }
+
+        $enclosing = $this->union;
+
+        try {
+            // Each part is marked with its position, as the plan's `query_specifications` lists them.
+            foreach ([$statement, ...array_map($this->unionPart(...), $statement->union)] as $position => $part) {
+                $this->union = [...$enclosing, $position];
+
+                if ($part !== null) {
+                    $this->select($part, $outer, $within);
+                }
+            }
+        } finally {
+            $this->union = $enclosing;
+        }
     }
 
     /**
@@ -140,18 +246,21 @@ final class ColumnExtractor
         /** @var array<string, ?TableColumns> $scope */
         $scope = [];
 
-        foreach ($select->from as $expression) {
+        [$from, $joins] = $this->spread($select->from, $select->join ?? []);
+
+        foreach ($from as $expression) {
             $this->addReference($scope, $expression, $outer);
         }
 
         $using = [];
 
-        foreach ($select->join ?? [] as $join) {
+        foreach ($joins as [$join, $group]) {
             if ($join->expr === null) {
                 continue;
             }
 
-            $previous = $scope;
+            // A join inside a parenthesized join reads its USING columns from that join's tables alone.
+            $previous = $group === null ? $scope : array_intersect_key($scope, array_flip($group));
             $joined = $this->addReference($scope, $join->expr, $outer);
 
             foreach ($join->using->values ?? [] as $column) {
@@ -161,11 +270,17 @@ final class ColumnExtractor
 
         $chain = [$scope, ...$outer];
 
-        foreach ($select->join ?? [] as $join) {
+        foreach ($joins as [$join]) {
             $this->conditions($join->on, $chain);
         }
 
         $this->conditions($select->where, $chain);
+
+        // HAVING filters groups, not rows: only its subqueries (EXPLAIN's `having_subqueries`) filter their own tables.
+        if ($select->having !== null && $select->having !== []) {
+            [$tokens, $raw] = $this->tokens(implode(' ', array_map(fn (Condition $condition) => $condition->expr, $select->having)));
+            $this->withSubqueries($tokens, $raw, $chain);
+        }
 
         // A correlated subquery in the SELECT list (withCount, withSum), alone or within an expression (CASE, COALESCE), filters its own tables.
         foreach ($select->expr as $item) {
@@ -184,6 +299,23 @@ final class ColumnExtractor
             }
         }
 
+        // A subquery in GROUP BY or ORDER BY (EXPLAIN's `group_by_subqueries`, `order_by_subqueries`) filters its own tables too.
+        foreach ([...$select->group ?? [], ...$select->order ?? []] as $item) {
+            $sql = (string) $item->expr?->expr;
+
+            if (stripos($sql, 'select') !== false) {
+                [$tokens, $raw] = $this->tokens($sql);
+                $enclosing = $this->sorting;
+                $this->sorting = true;
+
+                try {
+                    $this->withSubqueries($tokens, $raw, $chain);
+                } finally {
+                    $this->sorting = $enclosing;
+                }
+            }
+        }
+
         foreach ($using as [$joined, $previous, $column]) {
             $other = $this->resolve(null, $column, [$previous]);
 
@@ -196,6 +328,103 @@ final class ColumnExtractor
     }
 
     /**
+     * The FROM and JOIN table references, with each parenthesized join
+     * (`a left join (b inner join c on …) on …`) spread into the table
+     * references it joins, which MySQL reads in the join around it: the
+     * first takes the join's ON / USING, the others keep their own. Each
+     * join comes with the names of the table references its USING columns
+     * are read from when it sits inside a parenthesized join (those joined
+     * before it there), null for the query's own joins (all those before it).
+     *
+     * @param  array<Expression>  $from
+     * @param  array<JoinKeyword>  $joins
+     * @return array{list<Expression>, list<array{JoinKeyword, ?list<string>}>}
+     */
+    private function spread(array $from, array $joins): array
+    {
+        $tables = [];
+        $joined = [];
+
+        foreach ($from as $expression) {
+            $nested = $this->nestedJoin($expression);
+
+            if ($nested === null) {
+                $tables[] = $expression;
+
+                continue;
+            }
+
+            array_push($tables, ...$nested[0]);
+            array_push($joined, ...$nested[1]);
+        }
+
+        foreach ($joins as $join) {
+            if ($join->expr === null) {
+                continue;
+            }
+
+            $nested = $this->nestedJoin($join->expr);
+
+            if ($nested === null) {
+                $joined[] = [$join, null];
+
+                continue;
+            }
+
+            foreach ($nested[0] as $position => $expression) {
+                $joined[] = $position === 0
+                    ? [new JoinKeyword($join->type, $expression, $join->on, $join->using), null]
+                    : [new JoinKeyword('JOIN', $expression), null];
+            }
+
+            array_push($joined, ...$nested[1]);
+        }
+
+        return [$tables, $joined];
+    }
+
+    /**
+     * The table references of a parenthesized join, null for any other
+     * FROM or JOIN item, each of its joins with the table references
+     * joined before it there.
+     *
+     * @return array{list<Expression>, list<array{JoinKeyword, list<string>}>}|null
+     */
+    private function nestedJoin(Expression $expression): ?array
+    {
+        $sql = trim((string) $expression->expr);
+
+        if (($expression->table !== null && $expression->table !== '') || $expression->subquery !== null || ! str_starts_with($sql, '(')) {
+            return null;
+        }
+
+        $statement = $this->parse('select * from '.$this->unwrap($sql));
+        [$tables, $joins] = $this->spread($statement->from, $statement->join ?? []);
+        $before = array_map($this->referenceName(...), $tables);
+        $grouped = [];
+
+        foreach ($joins as [$join, $group]) {
+            $grouped[] = [$join, $group ?? $before];
+
+            if ($join->expr !== null) {
+                $before[] = $this->referenceName($join->expr);
+            }
+        }
+
+        return [$tables, $grouped];
+    }
+
+    /**
+     * The name a FROM or JOIN item takes in the query's scope.
+     */
+    private function referenceName(Expression $expression): string
+    {
+        return $expression->subquery !== null || $expression->table === null || $expression->table === ''
+            ? (string) $expression->alias
+            : ($expression->alias ?? $expression->table);
+    }
+
+    /**
      * @param  array<string, ?TableColumns>  $scope
      * @param  list<array<string, ?TableColumns>>  $outer
      */
@@ -203,7 +432,7 @@ final class ColumnExtractor
     {
         if ($expression->subquery !== null) {
             $alias = (string) $expression->alias;
-            $this->select($this->parse($this->unwrap((string) $expression->expr)), $outer, [...$this->within, $alias]);
+            $this->query($this->parse($this->unwrap((string) $expression->expr)), $outer, [...$this->within, $alias]);
             $scope[$alias] = null;
             $this->derived[] = $alias;
 
@@ -222,6 +451,8 @@ final class ColumnExtractor
             $expression->database === null || $expression->database === '' ? null : $expression->database,
             $this->within,
             $this->selectList,
+            $this->sorting,
+            $this->union,
         );
         $this->references[] = $reference;
         $scope[$reference->name] = $reference;
@@ -325,7 +556,49 @@ final class ColumnExtractor
             return;
         }
 
+        if ($this->negation($tokens, $chain)) {
+            return;
+        }
+
         $this->unindexable($tokens, $chain);
+    }
+
+    /**
+     * `column != value`, `column <> value`, `NOT column = value` or
+     * `column NOT IN (values)`.
+     *
+     * @param  list<array{kind: string, value: string, at: int}>  $tokens
+     * @param  list<array<string, ?TableColumns>>  $chain
+     */
+    private function negation(array $tokens, array $chain): bool
+    {
+        $not = ($tokens[0]['kind'] ?? null) === 'keyword' && $tokens[0]['value'] === 'NOT';
+        $column = $this->columnAt($tokens, $not ? 1 : 0);
+
+        if ($column === null) {
+            return false;
+        }
+
+        $operator = $tokens[$column['next']] ?? null;
+        $operand = array_slice($tokens, $column['next'] + 1);
+
+        $negated = match (true) {
+            $operator === null => false,
+            ! $not && $operator['value'] === 'NOT IN' && in_array($operator['kind'], ['keyword', 'function'], true) => ($operand[0]['kind'] ?? null) === 'open'
+                && $this->closing($operand, 0) === count($operand) - 1
+                && $this->constant(array_slice($operand, 1, -1)),
+            default => $operator['kind'] === 'operator' && in_array($operator['value'], $not ? self::EQUALITY : ['!=', '<>'], true)
+                && $this->constant($operand),
+        };
+
+        if (! $negated) {
+            return false;
+        }
+
+        $reference = $this->resolve($column['qualifier'], $column['column'], $chain);
+        $reference?->addNegated($this->spelled($reference, $column['column']));
+
+        return true;
     }
 
     /**
@@ -350,10 +623,10 @@ final class ColumnExtractor
             $other = $this->columnAt($operand, 0);
 
             if ($other !== null && $other['next'] === count($operand)) {
-                return $this->joinColumns($column, $other, $chain);
+                return $this->joinColumns($column, $other, $chain, $value === '<=>');
             }
 
-            return $this->constant($operand) && $this->equality($column, $chain);
+            return $this->constant($operand) && $this->equality($column, $chain, $value === '<=>');
         }
 
         if ($operator['kind'] === 'operator' && in_array($value, self::RANGE, true)) {
@@ -371,7 +644,7 @@ final class ColumnExtractor
             'IS' => count($operand) === 1 && in_array($operand[0]['value'], ['NULL', 'NOT NULL'], true)
                 && $this->nullCheck($column, $operand[0]['value'] === 'NULL', $chain),
             'BETWEEN', 'LIKE' => $this->constant(array_values(array_filter($operand, fn (array $token) => ! $this->isAnd($token))))
-                && $this->range($column, $chain),
+                && $this->range($column, $chain, $value === 'LIKE'),
             default => false,
         };
     }
@@ -394,7 +667,7 @@ final class ColumnExtractor
         $located = ['qualifier' => $column['qualifier'], 'column' => $column['column'], 'next' => 0];
 
         return match (true) {
-            in_array($operator['value'], self::EQUALITY, true) => $this->equality($located, $chain),
+            in_array($operator['value'], self::EQUALITY, true) => $this->equality($located, $chain, $operator['value'] === '<=>'),
             in_array($operator['value'], self::RANGE, true) => $this->range($located, $chain),
             default => false,
         };
@@ -403,11 +676,12 @@ final class ColumnExtractor
     /**
      * @param  array{qualifier: ?string, column: string, next: int}  $column
      * @param  list<array<string, ?TableColumns>>  $chain
+     * @param  bool  $nullSafe  whether it is `<=>`, which a NULL matches
      */
-    private function equality(array $column, array $chain): bool
+    private function equality(array $column, array $chain, bool $nullSafe = false): bool
     {
         $reference = $this->resolve($column['qualifier'], $column['column'], $chain);
-        $reference?->addEquality($this->spelled($reference, $column['column']));
+        $reference?->addEquality($this->spelled($reference, $column['column']), nullSafe: $nullSafe);
 
         return true;
     }
@@ -446,11 +720,12 @@ final class ColumnExtractor
     /**
      * @param  array{qualifier: ?string, column: string, next: int}  $column
      * @param  list<array<string, ?TableColumns>>  $chain
+     * @param  bool  $like  whether it is a `LIKE`
      */
-    private function range(array $column, array $chain): bool
+    private function range(array $column, array $chain, bool $like = false): bool
     {
         $reference = $this->resolve($column['qualifier'], $column['column'], $chain);
-        $reference?->addRange($this->spelled($reference, $column['column']));
+        $reference?->addRange($this->spelled($reference, $column['column']), $like);
 
         return true;
     }
@@ -482,8 +757,9 @@ final class ColumnExtractor
      * @param  array{qualifier: ?string, column: string, next: int}  $left
      * @param  array{qualifier: ?string, column: string, next: int}  $right
      * @param  list<array<string, ?TableColumns>>  $chain
+     * @param  bool  $nullSafe  whether it is `<=>`, which a NULL matches
      */
-    private function joinColumns(array $left, array $right, array $chain): bool
+    private function joinColumns(array $left, array $right, array $chain, bool $nullSafe = false): bool
     {
         $leftTable = $this->resolve($left['qualifier'], $left['column'], $chain);
         $rightTable = $this->resolve($right['qualifier'], $right['column'], $chain);
@@ -494,7 +770,7 @@ final class ColumnExtractor
             $table = $leftTable ?? $rightTable;
 
             if ($table !== null && $derived !== null) {
-                $table->addEquality($this->spelled($table, $leftTable === null ? $right['column'] : $left['column']), $derived);
+                $table->addEquality($this->spelled($table, $leftTable === null ? $right['column'] : $left['column']), $derived, $nullSafe);
             }
 
             return true;
@@ -504,7 +780,7 @@ final class ColumnExtractor
             return false;
         }
 
-        $this->join($leftTable, $left['column'], $rightTable, $right['column']);
+        $this->join($leftTable, $left['column'], $rightTable, $right['column'], $nullSafe);
 
         return true;
     }
@@ -525,10 +801,10 @@ final class ColumnExtractor
         return null;
     }
 
-    private function join(TableColumns $left, string $leftColumn, TableColumns $right, string $rightColumn): void
+    private function join(TableColumns $left, string $leftColumn, TableColumns $right, string $rightColumn, bool $nullSafe = false): void
     {
-        $left->addEquality($this->spelled($left, $leftColumn), $right->name);
-        $right->addEquality($this->spelled($right, $rightColumn), $left->name);
+        $left->addEquality($this->spelled($left, $leftColumn), $right->name, $nullSafe);
+        $right->addEquality($this->spelled($right, $rightColumn), $left->name, $nullSafe);
     }
 
     /**
@@ -574,7 +850,7 @@ final class ColumnExtractor
                 $close = $this->closing($tokens, $i);
                 $sql = implode('', array_slice($raw, $tokens[$i]['at'] + 1, $tokens[$close]['at'] - $tokens[$i]['at'] - 1));
 
-                $this->select($this->parse($sql), $chain, $this->within);
+                $this->query($this->parse($sql), $chain, $this->within);
 
                 $result[] = ['kind' => 'subquery', 'value' => '', 'at' => $tokens[$i]['at']];
                 $i = $close;
@@ -677,7 +953,7 @@ final class ColumnExtractor
      */
     private function resolve(?string $qualifier, string $column, array $chain, bool $record = true): ?TableColumns
     {
-        foreach ($chain as $scope) {
+        foreach ($chain as $at => $scope) {
             if ($qualifier !== null) {
                 if (array_key_exists($qualifier, $scope)) {
                     return $scope[$qualifier];
@@ -687,10 +963,16 @@ final class ColumnExtractor
             }
 
             $tables = array_values(array_filter($scope));
-            $owners = array_values(array_filter($tables, fn (TableColumns $reference) => in_array(strtolower($column), $this->columnsOf($reference->table), true)));
+            // A table whose columns are unknown may have this one: it is never placed in another table that has it too.
+            $owners = array_values(array_filter($tables, fn (TableColumns $reference) => in_array(strtolower($column), $this->columnsOf($reference->table) ?? [strtolower($column)], true)));
 
             if (count($owners) === 1) {
-                return $owners[0];
+                // A table whose columns are unknown claims it only when no outer table may have it: it may be a correlated column of one.
+                if ($this->columnsOf($owners[0]->table) !== null || ! $this->mayBeOuter($column, array_slice($chain, $at + 1))) {
+                    return $owners[0];
+                }
+
+                break;
             }
 
             if (count($owners) > 1) {
@@ -709,21 +991,42 @@ final class ColumnExtractor
     }
 
     /**
-     * @return list<string> lowercased
+     * Whether a table of the `$outer` scopes has `$column`, or may have it
+     * since its columns are unknown.
+     *
+     * @param  list<array<string, ?TableColumns>>  $outer
      */
-    private function columnsOf(string $table): array
+    private function mayBeOuter(string $column, array $outer): bool
     {
-        return array_keys($this->schema($table));
+        foreach ($outer as $scope) {
+            foreach (array_filter($scope) as $reference) {
+                if (in_array(strtolower($column), $this->columnsOf($reference->table) ?? [strtolower($column)], true)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
-     * @return array<string, string> lowercased column name => as the schema spells it
+     * @return ?list<string> lowercased; null when unknown
      */
-    private function schema(string $table): array
+    private function columnsOf(string $table): ?array
     {
-        if (! isset($this->columns[$table])) {
+        $schema = $this->schema($table);
+
+        return $schema === null ? null : array_keys($schema);
+    }
+
+    /**
+     * @return ?array<string, string> lowercased column name => as the schema spells it; null when unknown
+     */
+    private function schema(string $table): ?array
+    {
+        if (! array_key_exists($table, $this->columns)) {
             $names = ($this->columnsOf)($table);
-            $this->columns[$table] = array_combine(array_map(strtolower(...), $names), $names);
+            $this->columns[$table] = $names === null ? null : array_combine(array_map(strtolower(...), $names), $names);
         }
 
         return $this->columns[$table];
@@ -735,7 +1038,7 @@ final class ColumnExtractor
      */
     private function spelled(TableColumns $reference, string $column): string
     {
-        return $this->schema($reference->table)[strtolower($column)] ?? $column;
+        return ($this->schema($reference->table) ?? [])[strtolower($column)] ?? $column;
     }
 
     /**

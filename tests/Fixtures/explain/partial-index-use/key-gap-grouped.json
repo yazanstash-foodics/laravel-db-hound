@@ -1,0 +1,42 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "100.73"
+        },
+        "grouping_operation": {
+            "using_filesort": false,
+            "table": {
+                "table_name": "daily_card_insights",
+                "access_type": "ref",
+                "possible_keys": [
+                    "PRIMARY"
+                ],
+                "key": "PRIMARY",
+                "used_key_parts": [
+                    "merchant_id"
+                ],
+                "key_length": "8",
+                "ref": [
+                    "const"
+                ],
+                "rows_examined_per_scan": 1000,
+                "rows_produced_per_join": 111,
+                "filtered": "11.11",
+                "cost_info": {
+                    "read_cost": "0.74",
+                    "eval_cost": "11.11",
+                    "prefix_cost": "100.74",
+                    "data_read_per_join": "3K"
+                },
+                "used_columns": [
+                    "merchant_id",
+                    "card_id",
+                    "day",
+                    "amount"
+                ],
+                "attached_condition": "(`db_hound_shapes`.`daily_card_insights`.`day` between '2026-01-05' and '2026-01-10')"
+            }
+        }
+    }
+}

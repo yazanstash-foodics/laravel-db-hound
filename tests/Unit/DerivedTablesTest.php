@@ -1,6 +1,5 @@
 <?php
 
-use Foodics\DbHound\Analysis\AnalysisResult;
 use Foodics\DbHound\Analysis\Index;
 use Foodics\DbHound\Analysis\Plan;
 use Foodics\DbHound\Analysis\TableAccess;
@@ -13,8 +12,6 @@ use Foodics\DbHound\Drivers\MySqlDriver;
  * with a few thousand rows a table (200 personal access tokens) and indexed
  * as the staging tables are.
  */
-
-const LATEST_OF_MANY = 'select `personal_access_tokens`.* from `personal_access_tokens` inner join (select max(`personal_access_tokens`.`id`) as `id_aggregate`, min(`personal_access_tokens`.`last_used_at`) as `last_used_at_aggregate`, `personal_access_tokens`.`tokenable_id`, `personal_access_tokens`.`tokenable_type` from `personal_access_tokens` inner join (select max(`personal_access_tokens`.`last_used_at`) as `last_used_at_aggregate`, `personal_access_tokens`.`tokenable_id`, `personal_access_tokens`.`tokenable_type` from `personal_access_tokens` where `personal_access_tokens`.`tokenable_id` in (?) and `personal_access_tokens`.`tokenable_type` = ? group by `personal_access_tokens`.`tokenable_id`, `personal_access_tokens`.`tokenable_type`) as `latestOfMany` on `latestOfMany`.`last_used_at_aggregate` = `personal_access_tokens`.`last_used_at` and `latestOfMany`.`tokenable_type` = `personal_access_tokens`.`tokenable_type` and `latestOfMany`.`tokenable_id` = `personal_access_tokens`.`tokenable_id` group by `personal_access_tokens`.`tokenable_id`, `personal_access_tokens`.`tokenable_type`) as `latestOfMany` on `latestOfMany`.`id_aggregate` = `personal_access_tokens`.`id` and `latestOfMany`.`last_used_at_aggregate` = `personal_access_tokens`.`last_used_at` and `latestOfMany`.`tokenable_type` = `personal_access_tokens`.`tokenable_type` and `latestOfMany`.`tokenable_id` = `personal_access_tokens`.`tokenable_id`';
 
 const WINDOW_ORDERS = 'select * from (select *, row_number() over (partition by `orders`.`merchant_id` order by `created_at` desc) as `laravel_row` from `orders` where `status` in (?) and `orders`.`merchant_id` in (?) and (`orders`.`merchant_id` = ? and `orders`.`merchant_id` is not null) and `orders`.`deleted_at` is null) as `laravel_table` where `laravel_row` <= ? order by `laravel_row`';
 
@@ -29,11 +26,6 @@ const DERIVED_DIFF = 'select sum(diff.difference) as negative, `account_number`,
 const DERIVED_TEMP_TABLE = 'select count(*) as `aggregate` from (select `card_id`, sum(amount) as amount, count(distinct day) as unique_visits, count(distinct branch_id) as branches_count from `daily_card_insights` where `merchant_id` = ? and `day` between ? and ? group by `card_id` having (amount / ?) >= ? and (unique_visits / ?) >= ? and (branches_count / ?) >= ?) as `temp_table`';
 
 const NOT_EQUAL = 'select count(*) as `aggregate` from `mt942_statement` where not `statement_date` = ?';
-
-function stagingPlan(string $name): Plan
-{
-    return MySqlDriver::planFromJson((string) file_get_contents(__DIR__.'/../Fixtures/explain/staging/'.$name.'.json'));
-}
 
 /**
  * The tables the staging plans were recorded on, indexed as they were.
@@ -97,35 +89,19 @@ function stagingShapes(array $indexes = []): array
     return $shapes;
 }
 
-/**
- * @return list<array{string, list<string>}>
- */
-function suggestedIndexes(AnalysisResult $result): array
-{
-    return array_map(fn ($suggestion) => [$suggestion->table, $suggestion->columns], $result->suggestions);
-}
-
-/**
- * @return list<string>
- */
-function unparsedReasons(AnalysisResult $result): array
-{
-    return array_map(fn ($unparsed) => $unparsed->reason, $result->unparsed);
-}
-
 it('analyzes the tables inside the derived tables of a latestOfMany query, never the derived tables themselves', function () {
     $result = analyzeWithCardinality([LATEST_OF_MANY => stagingPlan('latest-of-many')], stagingShapes());
 
     // The inner query seeks on the morph columns; the one around it then
     // joins the latest `last_used_at` of each back to its token.
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(suggestedIndexes($result))->toBe([['personal_access_tokens', ['tokenable_id', 'tokenable_type', 'last_used_at']]]);
 });
 
 it('analyzes the inner query of a window-function eager load (laravel_table)', function (string $sql, string $plan, array $shapes, array $expected) {
     $result = analyzeWithCardinality([$sql => stagingPlan($plan)], $shapes);
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(suggestedIndexes($result))->toBe([$expected]);
 })->with([
     'orders' => [WINDOW_ORDERS, 'window-orders', stagingShapes(), ['orders', ['merchant_id', 'status', 'deleted_at']]],
@@ -137,17 +113,25 @@ it('analyzes the inner query of a window-function eager load (laravel_table)', f
     ],
 ]);
 
-it('suggests an index on the table of a correlated subquery in the SELECT list (withCount, withSum)', function (string $sql, string $plan, array $columns) {
+it('suggests an index on the table of a correlated subquery in the SELECT list (withCount, withSum)', function (string $sql, string $plan, array $expected) {
     $result = analyzeWithCardinality([$sql => stagingPlan($plan)], stagingShapes());
 
-    expect($result->unparsed)->toBe([])
-        ->and(suggestedIndexes($result))->toBe([['pending_review_records', $columns]]);
+    $suggested = suggestedIndexes($result);
+    // In table order: the columns of each, in index order.
+    usort($suggested, fn (array $a, array $b) => $a[0] <=> $b[0]);
+
+    expect(unsuggested($result))->toBe([])
+        ->and($suggested)->toBe($expected);
 })->with([
-    'withCount on a morph relation' => [SELECT_LIST_COUNTS, 'select-list-counts', ['pendable_id', 'pendable_type', 'deleted_at']],
-    'withCount among selected columns' => [SELECT_LIST_TRANSACTIONS, 'select-list-transactions', ['pendable_id', 'status', 'deleted_at']],
+    'withCount on a morph relation' => [SELECT_LIST_COUNTS, 'select-list-counts', [['pending_review_records', ['pendable_id', 'pendable_type', 'deleted_at']]]],
+    // The withSum reads `transaction_charges` through its `transaction_id` index and checks `type` on the rows.
+    'withCount among selected columns' => [SELECT_LIST_TRANSACTIONS, 'select-list-transactions', [
+        ['pending_review_records', ['pendable_id', 'status', 'deleted_at']],
+        ['transaction_charges', ['transaction_id', 'type']],
+    ]],
 ]);
 
-it('leaves at most 3 of the 11 staging unparsed entries unparsed', function () {
+it('leaves none of the 11 unparsed entries of the v1 staging Report unparsed, skipping what no index serves (ticket 025)', function () {
     $result = analyzeWithCardinality(
         [
             SELECT_LIST_COUNTS => stagingPlan('select-list-counts'),
@@ -162,17 +146,22 @@ it('leaves at most 3 of the 11 staging unparsed entries unparsed', function () {
         stagingShapes(),
     );
 
-    // What remains is what no index serves: a `!=` and an IS NOT NULL alone.
-    expect(unparsedReasons($result))->toEqualCanonicalizing([
-        'full scan on `mt942_statement`, but no indexable predicate columns were found',
-        'full scan on `bank_statements_summary`, but it has only low-selectivity predicates (`merchant_id`)',
-    ])->and(suggestedIndexes($result))->toEqualCanonicalizing([
-        ['pending_review_records', ['pendable_id', 'pendable_type', 'deleted_at']],
-        ['pending_review_records', ['pendable_id', 'status', 'deleted_at']],
-        ['personal_access_tokens', ['tokenable_id', 'tokenable_type', 'last_used_at']],
-        ['daily_card_insights', ['merchant_id', 'day']],
-        ['orders', ['merchant_id', 'status', 'deleted_at']],
-    ]);
+    // What remains is what no index serves, a `NOT =` and an IS NOT NULL alone: deliberate skips, not failures to read the query.
+    expect($result->unparsed)->toBe([])
+        ->and(skippedReasons($result))->toEqualCanonicalizing([
+            'full scan on `mt942_statement`, but it has only negated predicates (`statement_date`)',
+            'full scan on `bank_statements_summary`, but it has only low-selectivity predicates (`merchant_id`)',
+        ])->and(suggestedIndexes($result))->toEqualCanonicalizing([
+            // The review-record subqueries run once per outer row, so neither is folded into the other's index (ticket 029).
+            ['pending_review_records', ['pendable_id', 'pendable_type', 'deleted_at']],
+            ['pending_review_records', ['pendable_id', 'status', 'deleted_at']],
+            ['personal_access_tokens', ['tokenable_id', 'tokenable_type', 'last_used_at']],
+            ['daily_card_insights', ['merchant_id', 'day']],
+            ['orders', ['merchant_id', 'status', 'deleted_at']],
+            // Partial index use: the plans seek on the first column only and check the second on the rows.
+            ['merchant_users', ['merchant_id', 'is_contact_user']],
+            ['transaction_charges', ['transaction_id', 'type']],
+        ]);
 });
 
 it('never lists a full scan of a derived table, whether EXPLAIN or only the query says it is one', function () {
@@ -184,7 +173,7 @@ it('never lists a full scan of a derived table, whether EXPLAIN or only the quer
 
     $result = analyzeWithCardinality([DERIVED_TEMP_TABLE => $plan], stagingShapes());
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(suggestedIndexes($result))->toBe([['daily_card_insights', ['merchant_id', 'day']]]);
 });
 
@@ -203,7 +192,7 @@ it('analyzes a query with a CASE expression in its SELECT list', function (strin
         millionOrders(['reference' => 1_000_000]),
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(suggestedIndexes($result))->toBe([['orders', ['reference']]]);
 })->with([
     'searched CASE' => ['select `orders`.`id`, case when `status` = ? then ? else ? end as `label` from `orders` where `orders`.`reference` = ?'],
@@ -244,7 +233,8 @@ it('tells a whereHas subquery from a withCount one on the same table', function 
 
     $result = analyzeWithCardinality([$sql => $plan], $shapes);
 
-    // The withCount scan runs per post on `post_id`; the whereHas one, materialized once, filters on `status` alone.
+    // The withCount scan runs per post on `post_id`; the whereHas one, materialized once, filters on `status` alone,
+    // which is not listed: the Fingerprint gets an index.
     expect(suggestedIndexes($result))->toBe([['comments', ['post_id']]])
-        ->and(unparsedReasons($result))->toBe(['full scan on `comments`, but it has only low-selectivity predicates (`status`)']);
+        ->and(unparsedReasons($result))->toBe([]);
 });

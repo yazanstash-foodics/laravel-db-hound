@@ -3,9 +3,11 @@
 use Foodics\DbHound\Analysis\AnalysisResult;
 use Foodics\DbHound\Analysis\Index;
 use Foodics\DbHound\Analysis\Plan;
+use Foodics\DbHound\Analysis\RedundantIndex;
 use Foodics\DbHound\Analysis\Suggestion;
 use Foodics\DbHound\Analysis\TableAccess;
-use Foodics\DbHound\Analysis\UnparsedQuery;
+use Foodics\DbHound\Analysis\UnsuggestedBecause;
+use Foodics\DbHound\Analysis\UnsuggestedQuery;
 use Foodics\DbHound\Report\ReportContext;
 use Foodics\DbHound\Report\ReportRenderer;
 use Illuminate\Support\Carbon;
@@ -188,12 +190,18 @@ it('documents every field of the Report', function () {
         queries: 1250,
         thresholds: everyFingerprint()->describe(),
         relaxed: everyFingerprint()->relaxed(),
-    ), new AnalysisResult([$suggestion], [new UnparsedQuery('mysql', 'select 1', 'unparseable')]));
+    ), new AnalysisResult([$suggestion], [
+        new UnsuggestedQuery('mysql', 'select count(*) from `orders` where `deleted_at` is null', 'only low-selectivity predicates', UnsuggestedBecause::OnlyLowSelectivity),
+        new UnsuggestedQuery('mysql', 'select 1', 'unparseable', UnsuggestedBecause::ParserFailed),
+    ], redundant: [
+        new RedundantIndex('mysql', 'orders', new Index('orders_status_index', ['status'], false), new Index('orders_status_created_at_index', ['status', 'created_at'], false), false, ['status', 'id']),
+    ]));
 
     preg_match_all('/^#{2,3} ([A-Z][a-z][^\n]*)$/m', $markdown, $sections);
     preg_match_all('/^- \*\*([^*]+):\*\*/m', $markdown, $fields);
     preg_match_all('/^\*\*([^*`(]+?)\s*(?:`|\(|\*\*)/m', $markdown, $blocks);
-    preg_match_all('/^  - ([^:]+):/m', $markdown, $thresholds);
+    preg_match_all('/^  - ([^:*]+):/m', $markdown, $thresholds);
+    preg_match_all('/^  - \*\*([^*]+):\*\*/m', $markdown, $caveats);
     preg_match_all('/^> \*\*([^*]+)\*\*/m', $markdown, $warnings);
     preg_match('/^\| Rank \|.*$/m', $markdown, $summary);
     $summaryColumns = array_map('trim', explode('|', trim($summary[0] ?? '', '| ')));
@@ -205,12 +213,15 @@ it('documents every field of the Report', function () {
         // Block headings end with the table or a count: `Existing indexes on `orders``, `Served Fingerprints (2)`.
         ...array_map(fn (string $label) => "**{$label}", $blocks[1]),
         ...$thresholds[1],
+        ...array_map(fn (string $caveat) => "**{$caveat}**", $caveats[1]),
         ...array_map(fn (string $warning) => "**{$warning}**", $warnings[1]),
         ...array_map(fn (string $column) => "| **{$column}** |", $summaryColumns),
     ], fn (string $text) => ! str_contains($documentation, $text)));
 
     expect($fields[1])->toContain('Generated at', 'Kind', 'Note', 'Total impact')
-        ->and($sections[1])->toContain('Summary', 'Unparsed queries')
+        ->and($sections[1])->toContain('Summary', 'Skipped queries', 'Unparsed queries', 'Redundant existing indexes')
+        ->and($fields[1])->toContain('Skipped queries', 'Unparsed queries', 'Redundant existing indexes')
+        ->and($caveats[1])->toBe(['Primary key order', 'Foreign keys'])
         ->and($summaryColumns)->toContain('Rank', 'Kind', 'Fingerprints served')
         ->and($blocks[1])->toContain('EXPLAIN summary', 'Existing indexes on', 'Served Fingerprints')
         ->and($thresholds[1])->toContain('Fingerprint count')

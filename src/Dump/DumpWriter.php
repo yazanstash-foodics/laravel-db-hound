@@ -9,6 +9,7 @@ use Foodics\DbHound\Analysis\ExplainStatement;
 use Foodics\DbHound\Analysis\Index;
 use Foodics\DbHound\Analysis\PlaceholderBindings;
 use Foodics\DbHound\Analysis\Qualification;
+use Foodics\DbHound\Analysis\RunScopedDriver;
 use Foodics\DbHound\Analysis\TableLookupFailed;
 use Foodics\DbHound\Analysis\UnparseableSql;
 use Foodics\DbHound\Capture\QueryAggregate;
@@ -44,6 +45,11 @@ final class DumpWriter
     public function write(array $queries, AnalysisDrivers $drivers, $stream): int
     {
         $written = 0;
+        // Schema metadata is looked up once per table for the whole Dump, as `analyze` does for its run.
+        $scoped = [];
+        $driverFor = function (string $connection) use (&$scoped, $drivers): Driver {
+            return $scoped[$connection] ??= new RunScopedDriver($drivers->driverFor($connection));
+        };
 
         foreach ($this->qualification->select($queries) as $query) {
             // Writes are explained as the SELECT of the rows they touch.
@@ -56,7 +62,7 @@ final class DumpWriter
             // Binding values are kept exact (see bindings()); text that is still not UTF-8, an
             // inline binary literal say, has its invalid bytes replaced rather than lose the line.
             $line = json_encode(
-                $this->line($query, $shape, $drivers),
+                $this->line($query, $shape, $drivers, $driverFor),
                 JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE,
             )."\n";
 
@@ -71,9 +77,10 @@ final class DumpWriter
     }
 
     /**
+     * @param  callable(string): Driver  $driverFor  the Driver of a captured connection, for the whole Dump
      * @return array<string, mixed>
      */
-    private function line(QueryAggregate $query, ExplainableQuery $shape, AnalysisDrivers $drivers): array
+    private function line(QueryAggregate $query, ExplainableQuery $shape, AnalysisDrivers $drivers, callable $driverFor): array
     {
         $sample = $query->sample === null ? null : Sample::decrypt($this->encrypter, $query->sample);
 
@@ -85,7 +92,7 @@ final class DumpWriter
 
         // A connection renamed or removed since its Fingerprints were captured cannot be opened.
         try {
-            $driver = $drivers->driverFor($query->connection);
+            $driver = $driverFor($query->connection);
         } catch (Throwable $e) {
             $driver = null;
             $error = $schemaError = Analyzer::failure('opening analysis connection ['.$drivers->connectionFor($query->connection).']', $e);
@@ -108,7 +115,7 @@ final class DumpWriter
                 }
             }
 
-            [$schema, $schemaError] = $this->schema($shape->sql, $driver);
+            [$schema, $schemaError] = $this->schema($query->sql, $shape->sql, $driver);
         }
 
         return [
@@ -139,11 +146,12 @@ final class DumpWriter
      * Row count, indexes and column types of every table the query reads
      * from the connection's default database (the one the Driver
      * inspects), with what failed or was left out when they could not all
-     * be found.
+     * be found. `$sql` is the SELECT explained in place of `$statement`
+     * (the same one, unless it is a write).
      *
-     * @return array{0: array<string, array{row_count: int, indexes: list<array<string, mixed>>, columns: object}>, 1: ?string}
+     * @return array{0: array<string, array{row_count: int, engine: string, indexes: list<array<string, mixed>>, columns: object, cardinality: object}>, 1: ?string}
      */
-    private function schema(string $sql, Driver $driver): array
+    private function schema(string $statement, string $sql, Driver $driver): array
     {
         $schema = [];
 
@@ -185,21 +193,35 @@ final class DumpWriter
 
                 $schema[$reference->table] = [
                     'row_count' => $driver->rowCount($reference->table),
+                    'engine' => $driver->engine($reference->table),
                     'indexes' => array_map(fn (Index $index) => [
                         'name' => $index->name,
                         'columns' => $index->columns,
                         'unique' => $index->unique,
                         'type' => $index->type,
                         'visible' => $index->visible,
+                        'prefix_lengths' => (object) $index->prefixLengths,
+                        'descending' => $index->descending,
                     ], $driver->indexes($reference->table)),
                     'columns' => (object) $driver->columnTypes($reference->table),
+                    'cardinality' => (object) $driver->cardinality($reference->table),
                 ];
             }
         } catch (Throwable $e) {
             return [$schema, Analyzer::failure('inspecting its tables', $e)];
         }
 
-        return [$schema, $elsewhere === [] ? null : implode('; ', $elsewhere)];
+        // Never a table left out silently: one the statement names that no reference found is said to be missing.
+        $missing = array_diff($this->extractor->tablesNamed($statement), array_keys($schema), array_keys($elsewhere));
+        $problems = [
+            ...array_values($elsewhere),
+            ...array_map(fn (string $table) => sprintf(
+                '`%s` is named in the query, but db-hound found no reference to it in the statement it explains, so its schema is missing',
+                $table,
+            ), array_values($missing)),
+        ];
+
+        return [$schema, $problems === [] ? null : implode('; ', $problems)];
     }
 
     /**

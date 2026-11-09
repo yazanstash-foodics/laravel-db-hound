@@ -19,11 +19,13 @@ final readonly class IndexCandidate
      * @param  ColumnOrder  $order  the columns, with the blocks of equality columns the index serves in any order, and the weak filters it serves the query without
      * @param  ?string  $note  the alternative when a range keeps the index from satisfying the sort
      * @param  bool  $onlyWeak  whether every column is a weak filter, so the index would barely narrow the rows read
+     * @param  ?string  $sortBreaker  the range column that keeps the index from satisfying the sort, when the note names one
      */
     public function __construct(
         public ColumnOrder $order,
         public ?string $note = null,
         public bool $onlyWeak = false,
+        public ?string $sortBreaker = null,
     ) {
         $this->columns = $order->columns();
     }
@@ -127,6 +129,6 @@ final readonly class IndexCandidate
             $remains,
             implode(', ', $alternative),
             $range,
-        ));
+        ), sortBreaker: $range);
     }
 }

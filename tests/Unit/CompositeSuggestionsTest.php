@@ -109,7 +109,7 @@ it('puts the range column after the equality column and leaves out the sort the 
 
     $result = analyzeAgainst([$sql => recordedPlan('equality-range-sort')]);
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->table)->toBe('orders')
         ->and($result->suggestions[0]->columns)->toBe(['status', 'total']);
@@ -120,7 +120,7 @@ it('appends the sort columns after equality columns when no range blocks the sor
 
     $result = analyzeAgainst([$sql => recordedPlan('equality-equality-sort')]);
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->columns)->toBe(['branch_id', 'status', 'created_at'])
         ->and($result->suggestions[0]->notes)->toBe([]);
@@ -157,7 +157,7 @@ it('attributes aliased and joined columns to the table the plan reads without an
     $result = analyzeAgainst([$sql => recordedPlan('joined-aliases')]);
 
     // MySQL reads `items` first, so its join column is no lookup key.
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->table)->toBe('items')
         ->and($result->suggestions[0]->columns)->toBe(['kind'])
@@ -184,7 +184,7 @@ it('suggests an index on the inner table of a whereHas EXISTS subquery', functio
 
     // `branches` is read in full by design: it has no predicate of its own.
     // MySQL materializes the subquery once, so `branch_id` is no lookup key.
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->table)->toBe('orders')
         ->and($result->suggestions[0]->columns)->toBe(['status'])
@@ -261,7 +261,7 @@ it('reads unquoted keyword-named columns in the spelling of the schema', functio
         ['orders' => [new Index('orders_status_branch_id_index', ['status', 'branch_id'], false)]],
     );
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->columns)->toBe(['status', 'created_at'])
         ->and($result->suggestions[0]->columnTypes)->toBe(['status' => 'varchar(20)', 'created_at' => 'timestamp']);
@@ -270,7 +270,7 @@ it('reads unquoted keyword-named columns in the spelling of the schema', functio
 it('reads a range against an interval expression as a range', function (string $sql, array $columns = ['status', 'created_at']) {
     $result = analyzeAgainst([$sql => new Plan([new TableAccess('orders', 'ALL', null, 4980)])]);
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->columns)->toBe($columns);
 })->with([
@@ -283,7 +283,7 @@ it('reads a range against an interval expression as a range', function (string $
 it('treats an IN list as a range the sort cannot follow', function (string $sql, array $columns, array $notes) {
     $result = analyzeAgainst([$sql => new Plan([new TableAccess('orders', 'ALL', null, 4980)], usingFilesort: true)]);
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and($result->suggestions)->toHaveCount(1)
         ->and($result->suggestions[0]->columns)->toBe($columns)
         ->and($result->suggestions[0]->reasons)->toBe(['full scan', 'filesort'])
@@ -314,7 +314,7 @@ it('treats an IN list as a range the sort cannot follow', function (string $sql,
 it('does not claim a sort the suggested index cannot serve', function (string $sql, Plan $plan, array $columns, array $reasons) {
     $result = analyzeAgainst([$sql => $plan]);
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->table, $suggestion->columns, $suggestion->reasons, $suggestion->notes], $result->suggestions))
         ->toBe([['orders', $columns, $reasons, []]]);
 })->with([
@@ -347,7 +347,7 @@ it('does not claim a sort the suggested index cannot serve', function (string $s
 it('serves the sort it can', function (string $sql, Plan $plan, array $columns, array $reasons) {
     $result = analyzeAgainst([$sql => $plan]);
 
-    expect($result->unparsed)->toBe([])
+    expect(unsuggested($result))->toBe([])
         ->and(array_map(fn ($suggestion) => [$suggestion->table, $suggestion->columns, $suggestion->reasons, $suggestion->notes], $result->suggestions))
         ->toBe([['orders', $columns, $reasons, []]]);
 })->with([

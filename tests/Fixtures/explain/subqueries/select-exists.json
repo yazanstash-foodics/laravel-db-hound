@@ -1,0 +1,49 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "message": "No tables used",
+    "optimized_away_subqueries": [
+      {
+        "dependent": false,
+        "cacheable": true,
+        "query_block": {
+          "select_id": 2,
+          "cost_info": {
+            "query_cost": "0.70"
+          },
+          "table": {
+            "table_name": "adjustments",
+            "access_type": "ref",
+            "possible_keys": [
+              "adjustments_merchant_id_index",
+              "adjustments_type_index"
+            ],
+            "key": "adjustments_merchant_id_index",
+            "used_key_parts": [
+              "merchant_id"
+            ],
+            "key_length": "8",
+            "ref": [
+              "const"
+            ],
+            "rows_examined_per_scan": 2,
+            "rows_produced_per_join": 0,
+            "filtered": "2.50",
+            "cost_info": {
+              "read_cost": "0.50",
+              "eval_cost": "0.01",
+              "prefix_cost": "0.70",
+              "data_read_per_join": "5"
+            },
+            "used_columns": [
+              "merchant_id",
+              "type",
+              "is_approved"
+            ],
+            "attached_condition": "((`db_hound_fixtures`.`adjustments`.`type` = 'supply') and (`db_hound_fixtures`.`adjustments`.`is_approved` = 1))"
+          }
+        }
+      }
+    ]
+  }
+}

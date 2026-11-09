@@ -1,0 +1,43 @@
+{
+    "query_block": {
+        "select_id": 1,
+        "cost_info": {
+            "query_cost": "22.76"
+        },
+        "ordering_operation": {
+            "using_filesort": false,
+            "table": {
+                "table_name": "sales",
+                "access_type": "range",
+                "possible_keys": [
+                    "sales_merchant_id_created_at_index"
+                ],
+                "key": "sales_merchant_id_created_at_index",
+                "used_key_parts": [
+                    "merchant_id",
+                    "created_at"
+                ],
+                "key_length": "13",
+                "rows_examined_per_scan": 50,
+                "rows_produced_per_join": 5,
+                "filtered": "10.00",
+                "index_condition": "((`db_hound_shapes`.`sales`.`merchant_id` = 5) and (`db_hound_shapes`.`sales`.`created_at` > TIMESTAMP'2026-01-01 00:00:00'))",
+                "cost_info": {
+                    "read_cost": "22.26",
+                    "eval_cost": "0.50",
+                    "prefix_cost": "22.76",
+                    "data_read_per_join": "160"
+                },
+                "used_columns": [
+                    "id",
+                    "merchant_id",
+                    "is_void",
+                    "total",
+                    "created_at",
+                    "deleted_at"
+                ],
+                "attached_condition": "(`db_hound_shapes`.`sales`.`is_void` = 0)"
+            }
+        }
+    }
+}

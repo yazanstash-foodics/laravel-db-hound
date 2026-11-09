@@ -1,0 +1,95 @@
+{
+  "query_block": {
+    "select_id": 1,
+    "cost_info": {
+      "query_cost": "2253.50"
+    },
+    "grouping_operation": {
+      "using_temporary_table": true,
+      "using_filesort": false,
+      "nested_loop": [
+        {
+          "table": {
+            "table_name": "c",
+            "access_type": "ALL",
+            "rows_examined_per_scan": 5000,
+            "rows_produced_per_join": 5000,
+            "filtered": "100.00",
+            "cost_info": {
+              "read_cost": "3.50",
+              "eval_cost": "500.00",
+              "prefix_cost": "503.50",
+              "data_read_per_join": "507K"
+            },
+            "used_columns": [
+              "id",
+              "post_id",
+              "status"
+            ],
+            "attached_condition": "((exists(/* select#2 */ select 1 from `db_hound_fixtures`.`votes` where ((`db_hound_fixtures`.`votes`.`kind` = 'up') and (`db_hound_fixtures`.`c`.`id` = `db_hound_fixtures`.`votes`.`comment_id`))) or (`db_hound_fixtures`.`c`.`status` = 'a')) and (`db_hound_fixtures`.`c`.`post_id` is not null))",
+            "attached_subqueries": [
+              {
+                "dependent": true,
+                "cacheable": false,
+                "query_block": {
+                  "select_id": 2,
+                  "cost_info": {
+                    "query_cost": "503.75"
+                  },
+                  "table": {
+                    "table_name": "votes",
+                    "access_type": "ALL",
+                    "rows_examined_per_scan": 5000,
+                    "rows_produced_per_join": 50,
+                    "filtered": "1.00",
+                    "cost_info": {
+                      "read_cost": "453.75",
+                      "eval_cost": "5.00",
+                      "prefix_cost": "503.75",
+                      "data_read_per_join": "5K"
+                    },
+                    "used_columns": [
+                      "comment_id",
+                      "kind"
+                    ],
+                    "attached_condition": "((`db_hound_fixtures`.`votes`.`kind` = 'up') and (`db_hound_fixtures`.`c`.`id` = `db_hound_fixtures`.`votes`.`comment_id`))"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "table": {
+            "table_name": "posts",
+            "access_type": "eq_ref",
+            "possible_keys": [
+              "PRIMARY"
+            ],
+            "key": "PRIMARY",
+            "used_key_parts": [
+              "id"
+            ],
+            "key_length": "8",
+            "ref": [
+              "db_hound_fixtures.c.post_id"
+            ],
+            "rows_examined_per_scan": 1,
+            "rows_produced_per_join": 5000,
+            "filtered": "100.00",
+            "cost_info": {
+              "read_cost": "1250.00",
+              "eval_cost": "500.00",
+              "prefix_cost": "2253.50",
+              "data_read_per_join": "2M"
+            },
+            "used_columns": [
+              "id",
+              "author_id"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

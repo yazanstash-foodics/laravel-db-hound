@@ -5,14 +5,16 @@ use Foodics\DbHound\Analysis\FingerprintAccounting;
 use Foodics\DbHound\Analysis\FingerprintOutcome;
 use Foodics\DbHound\Analysis\Index;
 use Foodics\DbHound\Analysis\Plan;
+use Foodics\DbHound\Analysis\RedundantIndex;
 use Foodics\DbHound\Analysis\Suggestion;
 use Foodics\DbHound\Analysis\TableAccess;
-use Foodics\DbHound\Analysis\UnparsedQuery;
+use Foodics\DbHound\Analysis\UnsuggestedBecause;
+use Foodics\DbHound\Analysis\UnsuggestedQuery;
 use Foodics\DbHound\Report\ReportContext;
 use Foodics\DbHound\Report\ReportRenderer;
 use Illuminate\Support\Carbon;
 
-it('renders the header, the summary, each table with its context and Suggestions, and the unparsed section', function () {
+it('renders the header, the summary, each table with its context and Suggestions, and the skipped and unparsed sections', function () {
     $suggestion = new Suggestion(
         connection: 'mysql',
         table: 'orders',
@@ -32,7 +34,11 @@ it('renders the header, the summary, each table with its context and Suggestions
 
     $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult(
         [$suggestion],
-        [new UnparsedQuery('mysql', 'select * from `orders` where `status` = ? or `total` > ?', 'full scan, but predicate columns could not be extracted')],
+        [
+            new UnsuggestedQuery('mysql', 'select * from `orders` where `archived_on` = ?', 'full scan on `orders`, but the SQL parser failed on it (TypeError)', UnsuggestedBecause::ParserFailed),
+            new UnsuggestedQuery('mysql', 'select count(*) from `orders` where `deleted_at` is null', 'full scan on `orders`, but it has only low-selectivity predicates (`deleted_at`)', UnsuggestedBecause::OnlyLowSelectivity),
+            new UnsuggestedQuery('mysql', 'select * from `orders` where `status` != ?', 'full scan on `orders`, but it has only negated predicates (`status`)', UnsuggestedBecause::OnlyNegations),
+        ],
         FingerprintAccounting::tally([FingerprintOutcome::Explained, FingerprintOutcome::Explained, FingerprintOutcome::Explained, FingerprintOutcome::BelowThresholds]),
     ));
 
@@ -47,7 +53,9 @@ it('renders the header, the summary, each table with its context and Suggestions
 - **Fingerprint accounting:** 3 explained + 1 below count/latency thresholds = 4 analyzed
 - **Thresholds:** none
 - **Suggestions:** 1
+- **Skipped queries:** 2
 - **Unparsed queries:** 1
+- **Redundant existing indexes:** 0
 
 ## Summary
 
@@ -100,13 +108,30 @@ select * from `orders` where `status` = ?
 select `id` from `orders` where `status` = ? limit 10
 ```
 
-## Unparsed queries
+## Skipped queries
 
-- **mysql** — full scan, but predicate columns could not be extracted
+- **mysql** — full scan on `orders`, but it has only low-selectivity predicates (`deleted_at`)
 
   ```sql
-  select * from `orders` where `status` = ? or `total` > ?
+  select count(*) from `orders` where `deleted_at` is null
   ```
+- **mysql** — full scan on `orders`, but it has only negated predicates (`status`)
+
+  ```sql
+  select * from `orders` where `status` != ?
+  ```
+
+## Unparsed queries
+
+- **mysql** — full scan on `orders`, but the SQL parser failed on it (TypeError)
+
+  ```sql
+  select * from `orders` where `archived_on` = ?
+  ```
+
+## Redundant existing indexes
+
+None.
 
 MD);
 });
@@ -116,7 +141,8 @@ it('says so when there is nothing to suggest', function () {
 
     expect($markdown)
         ->toContain("## Summary\n\nNo Suggestions.\n")
-        ->toContain("## Unparsed queries\n\nNone.\n");
+        ->toContain("- **Skipped queries:** 0\n- **Unparsed queries:** 0\n")
+        ->toContain("## Skipped queries\n\nNone.\n\n## Unparsed queries\n\nNone.\n");
 });
 
 it('lists every Fingerprint a Suggestion serves', function () {
@@ -287,6 +313,7 @@ it('summarizes every Suggestion in one table right after the header', function (
 
     expect($markdown)->toContain(<<<'MD'
 - **Unparsed queries:** 0
+- **Redundant existing indexes:** 0
 
 ## Summary
 
@@ -371,7 +398,9 @@ MD)
             '## Summary',
             '## `orders` (mysql)',
             '## `orders` (reporting)',
+            '## Skipped queries',
             '## Unparsed queries',
+            '## Redundant existing indexes',
         ]);
 });
 
@@ -439,4 +468,52 @@ it('prints no warning when no threshold was relaxed', function () {
 
     expect($markdown)->toStartWith("# db-hound Report\n\n- **Generated at:**")
         ->not->toContain('Warning');
+});
+
+it('lists redundant existing indexes last, each with the index covering it and the caveats before dropping it', function () {
+    $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult([], [], redundant: [
+        new RedundantIndex('mysql', 'orders', new Index('orders_merchant_id_index', ['merchant_id'], false), new Index('orders_merchant_id_status_index', ['merchant_id', 'status'], false), false, ['merchant_id', 'id']),
+        new RedundantIndex('mysql', 'payments', new Index('payments_reference_index', ['reference'], false), new Index('payments_reference_unique', ['reference'], true), true),
+        new RedundantIndex('mysql', 'payments', new Index('reference', ['reference'], false), new Index('payments_reference_index', ['reference'], false), true),
+    ]));
+
+    expect($markdown)->toContain("- **Unparsed queries:** 0\n- **Redundant existing indexes:** 3\n")
+        ->and($markdown)->toEndWith(<<<'MD'
+## Unparsed queries
+
+None.
+
+## Redundant existing indexes
+
+- **mysql** — `orders`: `orders_merchant_id_index` (`merchant_id`) is a left prefix of `orders_merchant_id_status_index` (`merchant_id`, `status`), which serves every lookup it does.
+  - **Primary key order:** with the primary key InnoDB appends, `orders_merchant_id_index` also serves (`merchant_id`, `id`) and `orders_merchant_id_status_index` does not: before dropping it, check that no query sorts or seeks on `id` right after `merchant_id` (e.g. `ORDER BY merchant_id, id`).
+  - **Foreign keys:** MySQL needs an index starting with a foreign key's columns. `orders_merchant_id_status_index` starts with every column of `orders_merchant_id_index`, so it can back any foreign key `orders_merchant_id_index` backs, but verify the table's foreign key constraints before dropping it. db-hound never drops an index.
+- **mysql** — `payments`: `payments_reference_index` (`reference`) is an exact duplicate of `payments_reference_unique` (`reference`) unique, which serves every lookup it does.
+  - **Foreign keys:** MySQL needs an index starting with a foreign key's columns. `payments_reference_unique` starts with every column of `payments_reference_index`, so it can back any foreign key `payments_reference_index` backs, but verify the table's foreign key constraints before dropping it. db-hound never drops an index.
+- **mysql** — `payments`: `reference` (`reference`) is an exact duplicate of `payments_reference_index` (`reference`), which serves every lookup it does.
+  - **Foreign keys:** MySQL needs an index starting with a foreign key's columns. `payments_reference_index` starts with every column of `reference`, so it can back any foreign key `reference` backs, but verify the table's foreign key constraints before dropping it. db-hound never drops an index.
+
+MD);
+});
+
+it('says the index left keeps the constraint of a redundant unique index', function () {
+    $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult([], [], redundant: [
+        new RedundantIndex('mysql', 'orders', new Index('orders_id_unique', ['id'], true), new Index('PRIMARY', ['id'], true), true),
+    ]));
+
+    expect($markdown)->toEndWith(<<<'MD'
+## Redundant existing indexes
+
+- **mysql** — `orders`: `orders_id_unique` (`id`) unique is an exact duplicate of `PRIMARY` (`id`) unique, which serves every lookup it does.
+  - **Unique constraint:** `PRIMARY` enforces the same uniqueness on the same columns, so the constraint `orders_id_unique` enforces is kept once it is dropped.
+  - **Foreign keys:** MySQL needs an index starting with a foreign key's columns. `PRIMARY` starts with every column of `orders_id_unique`, so it can back any foreign key `orders_id_unique` backs, but verify the table's foreign key constraints before dropping it. db-hound never drops an index.
+
+MD);
+});
+
+it('says None. when no existing index is redundant', function () {
+    $markdown = (new ReportRenderer)->render(reportContext(), new AnalysisResult([], []));
+
+    expect($markdown)->toContain("- **Redundant existing indexes:** 0\n")
+        ->toEndWith("## Redundant existing indexes\n\nNone.\n");
 });

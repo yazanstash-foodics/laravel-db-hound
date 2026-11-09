@@ -16,6 +16,14 @@ use Throwable;
 final class MySqlDriver implements Driver
 {
     /**
+     * The deepest JSON nesting of an EXPLAIN plan db-hound reads. MySQL
+     * nests at most about 64 query blocks, but one block can take 10 JSON
+     * levels or more (a derived table holding a UNION under a GROUP BY is
+     * 10), so a real plan can be over 600 levels deep: 64 levels per block.
+     */
+    private const PLAN_DEPTH = 4096;
+
+    /**
      * The session's `explain_json_format_version` (MySQL 8.3+), '' on servers
      * without it, null until first looked up.
      */
@@ -219,11 +227,15 @@ final class MySqlDriver implements Driver
     /**
      * Summarize `EXPLAIN FORMAT=JSON` output (JSON format version 1). Table
      * accesses are listed in the order the plan reads them.
+     *
+     * The walk recurses once per JSON level, so the decoding depth bounds
+     * it: a plan nested deeper than `PLAN_DEPTH` fails to decode, far past
+     * what MySQL's nesting limit lets a query reach.
      */
     public static function planFromJson(string $explain): Plan
     {
         /** @var array<string, mixed> $json */
-        $json = json_decode($explain, true, flags: JSON_THROW_ON_ERROR);
+        $json = json_decode($explain, true, self::PLAN_DEPTH, JSON_THROW_ON_ERROR);
 
         $accesses = [];
         $filesort = false;
@@ -310,12 +322,23 @@ final class MySqlDriver implements Driver
             $grouped[$name]['type'] = strtoupper((string) ($row['INDEX_TYPE'] ?? 'BTREE'));
             $grouped[$name]['visible'] = strtoupper((string) ($row['IS_VISIBLE'] ?? 'YES')) !== 'NO'
                 && strtoupper((string) ($row['IGNORED'] ?? 'NO')) !== 'YES';
+            $grouped[$name]['prefixLengths'] ??= [];
+            $grouped[$name]['descending'] ??= [];
+
+            if (($row['SUB_PART'] ?? null) !== null) {
+                $grouped[$name]['prefixLengths'][(string) $row['COLUMN_NAME']] = (int) $row['SUB_PART'];
+            }
+
+            // MySQL 8.0+ stores a `DESC` key part in descending order ('D'); earlier servers ignore `DESC`.
+            if (strtoupper((string) ($row['COLLATION'] ?? 'A')) === 'D') {
+                $grouped[$name]['descending'][] = (string) $row['COLUMN_NAME'];
+            }
         }
 
         $indexes = [];
 
         foreach ($grouped as $name => $index) {
-            $indexes[] = new Index((string) $name, $index['columns'], $index['unique'], $index['type'], $index['visible']);
+            $indexes[] = new Index((string) $name, $index['columns'], $index['unique'], $index['type'], $index['visible'], $index['prefixLengths'], $index['descending']);
         }
 
         return $indexes;
@@ -405,9 +428,14 @@ final class MySqlDriver implements Driver
      * @param  list<TableAccess>  $accesses
      * @param  list<string>  $within  the tables whose materialization the node is part of, outermost first
      * @param  bool  $selectList  whether the node is part of a subquery in the SELECT list
+     * @param  bool  $sorting  whether the node is part of a subquery in GROUP BY or ORDER BY
+     * @param  list<int>  $union  the part of each UNION the node is part of, outermost first
+     * @param  bool  $dependent  whether the node is part of a subquery the plan marks dependent (run once per outer row)
      */
-    private static function walk(array $node, array &$accesses, bool &$filesort, bool &$temporary, array $within = [], bool $selectList = false): void
+    private static function walk(array $node, array &$accesses, bool &$filesort, bool &$temporary, array $within = [], bool $selectList = false, bool $sorting = false, array $union = [], bool $dependent = false): void
     {
+        $dependent = $dependent || ($node['dependent'] ?? false) === true;
+
         if (($node['using_filesort'] ?? false) === true) {
             $filesort = true;
         }
@@ -429,20 +457,47 @@ final class MySqlDriver implements Driver
                 // A semijoin materializes `<subqueryN>`, a derived table its alias (or `<derivedN>`).
                 derived: isset($node['materialized_from_subquery']) && ! str_starts_with($table, '<subquery'),
                 selectList: $selectList,
+                usedKeyParts: isset($node['used_key_parts']) && is_array($node['used_key_parts'])
+                    ? array_values(array_map(strval(...), $node['used_key_parts']))
+                    : null,
+                // Only whether there is one: the condition's text holds the literal values.
+                checksRows: isset($node['attached_condition']) || isset($node['index_condition']),
+                sorting: $sorting,
+                union: $union,
+                dependent: $dependent,
+                possibleKeys: isset($node['possible_keys']) && is_array($node['possible_keys'])
+                    ? array_values(array_map(strval(...), $node['possible_keys']))
+                    : null,
             );
         }
 
         foreach ($node as $key => $child) {
-            if (is_array($child)) {
-                self::walk(
-                    $child,
-                    $accesses,
-                    $filesort,
-                    $temporary,
-                    $key === 'materialized_from_subquery' ? [...$within, (string) $table] : $within,
-                    $selectList || $key === 'select_list_subqueries',
-                );
+            if (! is_array($child)) {
+                continue;
             }
+
+            $nestedWithin = $key === 'materialized_from_subquery' ? [...$within, (string) $table] : $within;
+            $nestedSelectList = $selectList || $key === 'select_list_subqueries';
+            $nestedSorting = $sorting || $key === 'order_by_subqueries' || $key === 'group_by_subqueries';
+
+            // MySQL marks dependent a subquery it materializes once (`<materialized_subquery>`, a semijoin's `<subqueryN>`),
+            // which it does not run per outer row; a LATERAL derived table it does rematerialize per outer row.
+            if ($key === 'materialized_from_subquery' && $table !== null && ($table === '<materialized_subquery>' || str_starts_with($table, '<subquery'))) {
+                unset($child['dependent']);
+            }
+
+            // Each SELECT of a UNION, in the order the statement lists them.
+            if ($key === 'query_specifications' && array_is_list($child)) {
+                foreach ($child as $part => $specification) {
+                    if (is_array($specification)) {
+                        self::walk($specification, $accesses, $filesort, $temporary, $nestedWithin, $nestedSelectList, $nestedSorting, [...$union, $part], $dependent);
+                    }
+                }
+
+                continue;
+            }
+
+            self::walk($child, $accesses, $filesort, $temporary, $nestedWithin, $nestedSelectList, $nestedSorting, $union, $dependent);
         }
     }
 }

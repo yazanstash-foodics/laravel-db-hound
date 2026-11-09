@@ -32,9 +32,10 @@ final readonly class ExtractedColumns
      *
      * @param  list<string>|null  $within
      * @param  list<string>  $materialized  the derived tables the plan materializes
+     * @param  list<int>  $union
      * @return list<TableColumns>
      */
-    public function named(string $name, ?array $within = null, array $materialized = [], bool $selectList = false): array
+    public function named(string $name, ?array $within = null, array $materialized = [], bool $selectList = false, bool $sorting = false, array $union = []): array
     {
         $named = array_values(array_filter($this->references, fn (TableColumns $reference) => $reference->name === $name));
         $named = $named !== []
@@ -49,7 +50,13 @@ final readonly class ExtractedColumns
         $inside = array_values(array_filter($named, fn (TableColumns $reference) => $reference->selectList === $selectList
             && array_values(array_filter($reference->within, fn (string $alias) => in_array($alias, $materialized, true))) === $path));
 
-        return count($inside) === 1 ? $inside : $named;
+        if (count($inside) === 1) {
+            return $inside;
+        }
+
+        $part = array_values(array_filter($inside, fn (TableColumns $reference) => $reference->sorting === $sorting && $reference->union === $union));
+
+        return count($part) === 1 ? $part : $named;
     }
 
     /**

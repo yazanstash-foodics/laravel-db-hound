@@ -9,6 +9,9 @@ namespace Foodics\DbHound\Analysis;
  */
 final readonly class Selectivity
 {
+    /** Rows per distinct value up to which an equality finds only a handful of rows. */
+    public const HANDFUL_OF_ROWS = 10;
+
     /**
      * @param  array<string, string>  $types  column => type
      * @param  array<string, int>  $cardinality  column => estimated distinct values, for the columns the Driver keeps statistics on
@@ -36,6 +39,85 @@ final readonly class Selectivity
         $cardinality = $this->cardinality[$column] ?? null;
 
         return $cardinality !== null && $cardinality > 0 && 1 / $cardinality > $this->lowSelectivityShare;
+    }
+
+    /**
+     * Whether an equality on the column finds only a handful of rows of a
+     * table of `$rows` rows: at most `HANDFUL_OF_ROWS` per distinct value
+     * by its statistics, or, without them, a key-like column by its type
+     * (a UUID `char(36)` or `binary(16)`, or an integer `*_id` foreign key).
+     */
+    public function findsAHandful(string $column, int $rows): bool
+    {
+        $cardinality = $this->cardinality[$column] ?? 0;
+
+        if ($cardinality > 0) {
+            return $rows / $cardinality <= self::HANDFUL_OF_ROWS;
+        }
+
+        return $this->isKeyLike($column);
+    }
+
+    /**
+     * Whether the column's type makes it a key of another table's rows (or
+     * of this one's): a UUID `char(36)` or `binary(16)`, or an integer
+     * `*_id` foreign key.
+     */
+    public function isKeyLike(string $column): bool
+    {
+        $type = strtolower(trim($this->types[$column] ?? ''));
+
+        return in_array($type, ['char(36)', 'binary(16)'], true)
+            || (str_ends_with(strtolower($column), '_id') && preg_match('/^(smallint|mediumint|int|integer|bigint)(\(\d+\))?( unsigned)?( zerofill)?$/', $type) === 1);
+    }
+
+    /**
+     * Whether an equality on `$column` finds as few rows of a table of
+     * `$rows` rows as one on `$other`: it finds only a handful
+     * (`findsAHandful()`), and, when both have statistics, has at least as
+     * many distinct values.
+     */
+    public function seeksAsSelectivelyAs(string $column, string $other, int $rows): bool
+    {
+        if (! $this->findsAHandful($column, $rows)) {
+            return false;
+        }
+
+        $mine = $this->cardinality[$column] ?? 0;
+        $theirs = $this->cardinality[$other] ?? 0;
+
+        return $mine === 0 || $theirs === 0 || $mine >= $theirs;
+    }
+
+    /**
+     * The rows of a table of `$rows` rows an equality on every one of
+     * `$columns` finds on average, by the statistics of the one with the
+     * most distinct values (the columns together have at least as many):
+     * an upper bound of that average (a skewed value finds more). Null when
+     * none of them has statistics.
+     *
+     * @param  list<string>  $columns
+     */
+    public function rowsPerKey(array $columns, int $rows): ?float
+    {
+        $distinct = max([0, ...array_map(fn (string $column) => $this->cardinality[$column] ?? 0, $columns)]);
+
+        return $distinct > 0 ? $rows / $distinct : null;
+    }
+
+    /**
+     * The type of the column when `findsAHandful()` takes it to find only a
+     * handful of rows from its type alone, with no statistics to measure
+     * it: what an engineer should check. Null when statistics decide, or
+     * the type does not make it key-like.
+     */
+    public function handfulAssumedFromType(string $column): ?string
+    {
+        if (($this->cardinality[$column] ?? 0) > 0 || ! $this->findsAHandful($column, 0)) {
+            return null;
+        }
+
+        return trim($this->types[$column] ?? '');
     }
 
     /**

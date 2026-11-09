@@ -180,7 +180,9 @@ MD)
             '### 3. `hound_orders` (`kind`)',
             '## `hound_branches`',
             '### 1. `hound_branches` (`status`)',
+            '## Skipped queries',
             '## Unparsed queries',
+            '## Redundant existing indexes',
         ])
         ->and(substr_count($report, '**Existing indexes on `hound_orders`**'))->toBe(1)
         ->and($report)->toContain('- **Total impact:** 100,000.00')
